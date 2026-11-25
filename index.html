@@ -4221,164 +4221,6 @@
             return ['zoomIn', 'zoomOut', 'panLeft', 'panRight', 'panUp', 'panDown'];
         };
 
-        // ARKA PLAN GÖRSELLERİ (1..N) ÖZEL SLAYT SÜRESİ & KAMERA ZAMANLAMA MOTORU (AE Timeline + Canlı Önizleme + MP4/WebM %100 Senkron)
-        window.buildBgSlideSchedule = function(mediaCount, targetTotalDuration, customBgTimeline, defaultEffectsPool) {
-            const count = Math.max(0, Number(mediaCount) || 0);
-            const fallbackPool = Array.isArray(defaultEffectsPool) && defaultEffectsPool.length > 0
-                ? defaultEffectsPool
-                : ['zoomIn', 'panRight', 'zoomOut', 'panLeft'];
-            const slidesCfg = (customBgTimeline && customBgTimeline.slides && typeof customBgTimeline.slides === 'object')
-                ? customBgTimeline.slides
-                : {};
-
-            if (count === 0) {
-                const baseDur = (targetTotalDuration && targetTotalDuration > 0) ? Number(targetTotalDuration) : 15;
-                return { allSlides: [], activeSlides: [], slidesTotalDuration: baseDur, effectiveTotalDuration: baseDur, hasManualDurations: false };
-            }
-
-            let activeIndices = [];
-            for (let i = 0; i < count; i++) {
-                const c = slidesCfg[i] || slidesCfg[String(i)] || {};
-                if (!c.muted) activeIndices.push(i);
-            }
-            if (activeIndices.length === 0) activeIndices = [0];
-            const activeSet = new Set(activeIndices);
-
-            const hasManualDurations = Boolean(
-                (customBgTimeline && customBgTimeline.lockManualDurations) ||
-                activeIndices.some(i => {
-                    const c = slidesCfg[i] || slidesCfg[String(i)];
-                    return c && c.duration !== undefined && c.duration !== null && Number(c.duration) > 0;
-                })
-            );
-
-            const baseTarget = (targetTotalDuration && Number(targetTotalDuration) > 0)
-                ? Number(targetTotalDuration)
-                : (activeIndices.length * 3.5);
-            const defaultUnitDur = Math.max(0.3, parseFloat((baseTarget / Math.max(1, activeIndices.length)).toFixed(2)));
-
-            let cursor = 0;
-            const activeSlides = [];
-            const allSlides = [];
-            let activePosCounter = 0;
-
-            for (let i = 0; i < count; i++) {
-                const c = slidesCfg[i] || slidesCfg[String(i)] || {};
-                const isMuted = !activeSet.has(i);
-                const rawDur = (c.duration !== undefined && c.duration !== null && Number(c.duration) > 0)
-                    ? Math.max(0.3, Number(c.duration))
-                    : defaultUnitDur;
-                const dur = hasManualDurations ? rawDur : defaultUnitDur;
-                const effOverride = (c.effect && c.effect !== 'auto') ? c.effect : null;
-                const defaultEff = fallbackPool[i % fallbackPool.length] || 'zoomIn';
-
-                if (isMuted) {
-                    allSlides.push({
-                        origIndex: i,
-                        activePos: -1,
-                        muted: true,
-                        duration: dur,
-                        start: cursor,
-                        end: cursor,
-                        effect: c.effect || 'auto',
-                        resolvedEffect: effOverride || defaultEff
-                    });
-                } else {
-                    const seg = {
-                        origIndex: i,
-                        activePos: activePosCounter++,
-                        muted: false,
-                        duration: dur,
-                        start: parseFloat(cursor.toFixed(3)),
-                        end: parseFloat((cursor + dur).toFixed(3)),
-                        effect: c.effect || 'auto',
-                        effectOverride: effOverride,
-                        resolvedEffect: effOverride || defaultEff
-                    };
-                    cursor += dur;
-                    activeSlides.push(seg);
-                    allSlides.push(seg);
-                }
-            }
-
-            const slidesTotalDuration = parseFloat(Math.max(0.3, cursor).toFixed(2));
-            let effectiveTotalDuration = baseTarget;
-            if (hasManualDurations) {
-                if (customBgTimeline && customBgTimeline.syncVideoDuration) {
-                    effectiveTotalDuration = slidesTotalDuration;
-                } else if (slidesTotalDuration > baseTarget + 0.05) {
-                    effectiveTotalDuration = slidesTotalDuration;
-                }
-            }
-
-            return {
-                allSlides,
-                activeSlides,
-                slidesTotalDuration,
-                effectiveTotalDuration: Math.max(0.5, effectiveTotalDuration),
-                hasManualDurations
-            };
-        };
-
-        window.resolveBgSlideStateAtTime = function(schedule, mediaList, timeSec) {
-            if (!schedule || !Array.isArray(schedule.activeSlides) || schedule.activeSlides.length === 0 || !Array.isArray(mediaList) || mediaList.length === 0) {
-                return null;
-            }
-            const activeSlides = schedule.activeSlides;
-            const t = Math.max(0, Number(timeSec) || 0);
-            let seg = activeSlides[activeSlides.length - 1];
-            for (let i = 0; i < activeSlides.length; i++) {
-                if (t < activeSlides[i].end || i === activeSlides.length - 1) {
-                    seg = activeSlides[i];
-                    break;
-                }
-            }
-            const activeData = mediaList[seg.origIndex] || mediaList[mediaList.length - 1];
-            const activeEffect = seg.effectOverride || (activeData && activeData.effect) || seg.resolvedEffect || 'zoomIn';
-            const segDur = Math.max(0.25, seg.duration);
-            const timeInSlide = Math.max(0, Math.min(segDur, t - seg.start));
-
-            const hasNext = seg.activePos < activeSlides.length - 1;
-            const nextSeg = hasNext ? activeSlides[seg.activePos + 1] : null;
-            const nextData = nextSeg ? (mediaList[nextSeg.origIndex] || null) : null;
-            const nextEffect = nextSeg ? (nextSeg.effectOverride || (nextData && nextData.effect) || nextSeg.resolvedEffect || 'zoomIn') : 'none';
-
-            const crossfadeDur = hasNext
-                ? Math.min(0.55, segDur * 0.38, Math.max(0.25, nextSeg.duration) * 0.45)
-                : 0;
-            let nextAlpha = 0;
-            if (hasNext && crossfadeDur > 0.02 && timeInSlide > segDur - crossfadeDur) {
-                nextAlpha = Math.min(1, Math.max(0, (timeInSlide - (segDur - crossfadeDur)) / crossfadeDur));
-            }
-
-            const prevSeg = seg.activePos > 0 ? activeSlides[seg.activePos - 1] : null;
-            const prevCrossfadeIn = prevSeg
-                ? Math.min(0.55, Math.max(0.25, prevSeg.duration) * 0.38, segDur * 0.45)
-                : 0;
-
-            const activeProgress = Math.min(1, Math.max(0, (timeInSlide + prevCrossfadeIn) / Math.max(0.25, segDur + prevCrossfadeIn)));
-            const nextProgress = (nextSeg && nextAlpha > 0)
-                ? Math.min(1, Math.max(0, (nextAlpha * crossfadeDur) / Math.max(0.25, nextSeg.duration + crossfadeDur)))
-                : 0;
-
-            return {
-                activeData,
-                activeEffect,
-                activeProgress,
-                nextData,
-                nextEffect,
-                nextAlpha,
-                nextProgress,
-                origIndex: seg.origIndex,
-                activePos: seg.activePos,
-                activeCount: activeSlides.length,
-                segDuration: segDur,
-                segStart: seg.start,
-                segEnd: seg.end,
-                timeInSlide
-            };
-        };
-
         // VİDEO RENDER ÖNCESİ EKSİK MÜZİK HATIRLATICI VE HIZLI MÜZİK EKLEME MODALI
         window.checkAudioBeforeVideoRender = function(rootNode, formatLabel = 'MP4') {
             const activeAudio = (rootNode && rootNode.selectedAudioFile) || window.selectedAudioFile;
@@ -5865,13 +5707,8 @@
 
                 btn.innerHTML = `<svg class="w-3.5 h-3.5 mr-1 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path></svg> Durdur`; btn.dataset.playing = 'true'; btn.className = origBtnClasses; btn.classList.add('!bg-red-500', '!text-white', 'hover:!bg-red-600', '!border-red-500'); btn.disabled = false;
 
-                const bgSchedule = window.buildBgSlideSchedule(
-                    validBgImages.length,
-                    targetTotalDuration,
-                    groups && groups.__bgSlideTimeline__,
-                    effectsList
-                );
-                const totalDuration = bgSchedule.effectiveTotalDuration;
+                let activeDuration = 3.5; if (targetTotalDuration && targetTotalDuration > 0 && validBgImages.length > 0) { activeDuration = targetTotalDuration / validBgImages.length; }
+                const totalDuration = validBgImages.length * activeDuration;
                 
                 const activeAudioFile = (rootNode && rootNode.selectedAudioFile) || window.selectedAudioFile;
                 if (activeAudioFile) { 
@@ -5930,12 +5767,14 @@
                         gainNode.gain.value = audioOptions.volume !== undefined ? audioOptions.volume : 1.0;
                     }
 
-                    const bgState = window.resolveBgSlideStateAtTime(bgSchedule, validBgImages, time);
+                    const activeImgIndex = Math.floor(time / activeDuration); const activeData = validBgImages[activeImgIndex] || validBgImages[validBgImages.length - 1];
+                    const nextImgIndex = Math.min(activeImgIndex + 1, validBgImages.length - 1); const nextData = validBgImages[nextImgIndex];
+                    const timeInCurrentImg = time % activeDuration; 
 
                     ctx.fillStyle = document.documentElement.classList.contains('dark') ? '#0a0a0a' : '#ffffff';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                    function drawBgLayer(dataObj, progress, alpha, overrideEffect) {
+                    function drawBgLayer(dataObj, progress, alpha) {
                         if (!dataObj) return;
                         if (dataObj.video) {
                             const vid = dataObj.video;
@@ -5951,7 +5790,7 @@
                             }
                         } else if (dataObj.img) {
                             const img = dataObj.img; const iw = dataObj.width || img.width; const ih = dataObj.height || img.height;
-                            const effect = overrideEffect || dataObj.effect; const scaleFit = Math.max(canvas.width / iw, canvas.height / ih);
+                            const effect = dataObj.effect; const scaleFit = Math.max(canvas.width / iw, canvas.height / ih);
                             let dw = iw * scaleFit, dh = ih * scaleFit, dx = (canvas.width - dw) / 2, dy = (canvas.height - dh) / 2;
 
                             if (effect === 'zoomIn') { const s = 1.0 + (0.14 * progress); dw *= s; dh *= s; dx = (canvas.width - dw) / 2; dy = (canvas.height - dh) / 2; } 
@@ -5965,12 +5804,15 @@
                         }
                     }
 
-                    if (bgState) {
-                        drawBgLayer(bgState.activeData, bgState.activeProgress, 1.0, bgState.activeEffect);
-                        if (bgState.nextAlpha > 0 && bgState.nextData) {
-                            drawBgLayer(bgState.nextData, bgState.nextProgress, bgState.nextAlpha, bgState.nextEffect);
-                        }
+                    const crossfadeDur = Math.min(0.6, activeDuration * 0.4); 
+                    const totalAnimDur = activeDuration + crossfadeDur;
+                    let nextAlpha = 0;
+                    if (timeInCurrentImg > activeDuration - crossfadeDur && activeImgIndex < validBgImages.length - 1) { 
+                        nextAlpha = (timeInCurrentImg - (activeDuration - crossfadeDur)) / crossfadeDur; 
                     }
+                    const activeProgress = (timeInCurrentImg + (activeImgIndex > 0 ? crossfadeDur : 0)) / totalAnimDur;
+                    drawBgLayer(activeData, activeProgress, 1.0); 
+                    if (nextAlpha > 0 && nextData) { const nextProgress = (nextAlpha * crossfadeDur) / totalAnimDur; drawBgLayer(nextData, nextProgress, nextAlpha); }
 
                     // Sabit Figma katmanlarını (gradyanlar ve sabit öğeler) hareketsiz olarak çiz
                     if (staticOverlayBmp) {
@@ -6533,13 +6375,8 @@
 
                     restoreOriginalNodes(); 
 
-                    const bgSchedule = window.buildBgSlideSchedule(
-                        validBgImages.length,
-                        targetTotalDuration,
-                        groups && groups.__bgSlideTimeline__,
-                        effectsList
-                    );
-                    const totalDuration = bgSchedule.effectiveTotalDuration;
+                    let activeDuration = 3.5; if (targetTotalDuration && targetTotalDuration > 0 && validBgImages.length > 0) { activeDuration = targetTotalDuration / validBgImages.length; }
+                    const totalDuration = targetTotalDuration || (validBgImages.length * activeDuration);
                     const totalFrames = Math.max(1, Math.round(fps * totalDuration));
                     
                     // Off-DOM GPU Render Canvas (DOM repaint/compositor yükünü sıfırlar) + Hafif Modal Önizleme Canvas'ı
@@ -6572,9 +6409,13 @@
                         ctx.fillStyle = document.documentElement.classList.contains('dark') ? '#0a0a0a' : '#ffffff';
                         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                        const bgState = window.resolveBgSlideStateAtTime(bgSchedule, validBgImages, time);
+                        const activeImgIndex = Math.floor(time / activeDuration); 
+                        const activeData = validBgImages[activeImgIndex] || validBgImages[validBgImages.length - 1]; 
+                        const nextImgIndex = Math.min(activeImgIndex + 1, validBgImages.length - 1); 
+                        const nextData = validBgImages[nextImgIndex]; 
+                        const timeInCurrentImg = time % activeDuration; 
 
-                        function drawBgLayer(dataObj, progress, alpha, overrideEffect) {
+                        function drawBgLayer(dataObj, progress, alpha) {
                             if (!dataObj) return;
                             if (dataObj.video) {
                                 const vid = dataObj.video;
@@ -6589,19 +6430,18 @@
                                 }
                             } else if (dataObj.img) {
                                 const img = dataObj.img; const iw = dataObj.width || img.width; const ih = dataObj.height || img.height;
-                                const effect = overrideEffect || dataObj.effect; const scaleFit = Math.max(canvas.width / iw, canvas.height / ih);
+                                const effect = dataObj.effect; const scaleFit = Math.max(canvas.width / iw, canvas.height / ih);
                                 let dw = iw * scaleFit, dh = ih * scaleFit, dx = (canvas.width - dw) / 2, dy = (canvas.height - dh) / 2;
                                 if (effect === 'zoomIn') { const s = 1.0 + (0.14 * progress); dw *= s; dh *= s; dx = (canvas.width - dw) / 2; dy = (canvas.height - dh) / 2; } else if (effect === 'zoomOut') { const s = 1.14 - (0.14 * progress); dw *= s; dh *= s; dx = (canvas.width - dw) / 2; dy = (canvas.height - dh) / 2; } else if (effect === 'panLeft') { const s = 1.1; dw *= s; dh *= s; dy = (canvas.height - dh) / 2; dx = ((canvas.width - dw) / 2) + (dw * 0.05 * progress); } else if (effect === 'panRight') { const s = 1.1; dw *= s; dh *= s; dy = (canvas.height - dh) / 2; dx = ((canvas.width - dw) / 2) - (dw * 0.05 * progress); } else if (effect === 'panUp') { const s = 1.1; dw *= s; dh *= s; dx = (canvas.width - dw) / 2; dy = ((canvas.height - dh) / 2) + (dh * 0.05 * progress); } else if (effect === 'panDown') { const s = 1.1; dw *= s; dh *= s; dx = (canvas.width - dw) / 2; dy = ((canvas.height - dh) / 2) - (dh * 0.05 * progress); }
                                 ctx.globalAlpha = alpha; ctx.drawImage(img, dx, dy, dw, dh); ctx.globalAlpha = 1.0;
                             }
                         }
 
-                        if (bgState) {
-                            drawBgLayer(bgState.activeData, bgState.activeProgress, 1.0, bgState.activeEffect);
-                            if (bgState.nextAlpha > 0 && bgState.nextData) {
-                                drawBgLayer(bgState.nextData, bgState.nextProgress, bgState.nextAlpha, bgState.nextEffect);
-                            }
-                        }
+                        const crossfadeDur = Math.min(0.6, activeDuration * 0.4); const totalAnimDur = activeDuration + crossfadeDur; let nextAlpha = 0; 
+                        if (timeInCurrentImg > activeDuration - crossfadeDur && activeImgIndex < validBgImages.length - 1) { nextAlpha = (timeInCurrentImg - (activeDuration - crossfadeDur)) / crossfadeDur; }
+                        const activeProgress = (timeInCurrentImg + (activeImgIndex > 0 ? crossfadeDur : 0)) / totalAnimDur;
+                        drawBgLayer(activeData, activeProgress, 1.0); 
+                        if (nextAlpha > 0 && nextData) { const nextProgress = (nextAlpha * crossfadeDur) / totalAnimDur; drawBgLayer(nextData, nextProgress, nextAlpha); }
 
                         // Sabit Figma katmanlarını (gradyanlar ve sabit öğeler) hareketsiz olarak çiz
                         if (staticOverlayBmp) {
@@ -7466,12 +7306,7 @@
                 <input type="file" id="import-project-input" accept=".zip,.etsproj,.json,.gks" class="hidden">
             </div>
 
-            <div id="team-sync-status-pill" class="hidden md:flex h-8 px-2.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 items-center gap-1.5 text-[10.5px] font-extrabold shrink-0 select-none" title="Çoklu Kullanıcı İzole Oturum & Çakışmasız Ekip Senkronizasyonu Aktif">
-                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span id="team-sync-status-label">Ekip Aktif</span>
-            </div>
-
-            <button id="shortcuts-help-btn" class="h-8 w-8 rounded-xl bg-slate-100 dark:bg-zinc-900 hover:bg-blue-500/15 text-slate-600 dark:text-zinc-300 flex items-center justify-center transition-all border border-slate-200/80 dark:border-zinc-800 font-mono font-extrabold text-xs shrink-0" title="Klavye Kısayolları (?)">?</button>
+            <button id="shortcuts-help-btn" class="h-8 w-8 rounded-xl bg-slate-100 dark:bg-zinc-900 hover:bg-blue-500/15 text-slate-600 dark:text-zinc-300 flex items-center justify-center transition-all border border-slate-200/80 dark:border-zinc-800 font-mono font-extrabold text-xs shrink-0" title="Klavye Kısayolları">?</button>
 
             <div class="relative shrink-0">
                 <button id="noti-btn" class="h-8 w-8 rounded-xl bg-slate-100 dark:bg-zinc-900 hover:bg-blue-500/15 text-slate-600 dark:text-zinc-300 flex items-center justify-center transition-all border border-slate-200/80 dark:border-zinc-800 relative" title="Sistem Bildirimleri">
@@ -7603,14 +7438,14 @@
                 <button id="close-shortcuts-modal" class="text-slate-400 hover:text-red-500"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
             </div>
             <div class="grid grid-cols-1 gap-2.5 text-xs text-slate-600 dark:text-zinc-300">
-                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Geri Al (Undo - Sahne, Toplu Kartlar, Tasarla & Timeline)</span><span class="font-mono bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded text-[11px] font-bold">Ctrl/Cmd + Z</span></div>
-                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>İleri Al (Redo - Mac & Windows Tam Uyumlu)</span><span class="font-mono bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded text-[11px] font-bold">Ctrl+Y / Cmd+Shift+Z</span></div>
-                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Hızlı Komut Paleti (Spotlight)</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Ctrl/Cmd + K</span></div>
-                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Projeyi Kaydet (.gks Yedek Paketi)</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Ctrl/Cmd + S</span></div>
-                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>AE Timeline Oynat / Duraklat & Kare İlerlet</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Space • ← / →</span></div>
-                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Tasarla Modunda Çoğalt / Sil / Kaydır</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Ctrl/Cmd+D • Del • Oklar</span></div>
-                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Tuvali Kaydır (Pan) & Yakınlaştır</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Space+Sürükle • Ctrl+Tekerlek</span></div>
-                <div class="flex justify-between items-center py-1.5"><span>Açık Pencereleri / Stüdyoları Kapat</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">ESC</span></div>
+                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Hızlı Komut Paleti (Spotlight)</span><span class="font-mono bg-blue-500/10 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded text-[11px] font-bold">Ctrl/Cmd + K</span></div>
+                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Geri Al / İleri Al</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Ctrl/Cmd + Z / Y</span></div>
+                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Tuvali Kaydır (Pan Modu)</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Space + Sürükle</span></div>
+                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Yakınlaştır / Uzaklaştır</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Ctrl/Alt + Tekerlek</span></div>
+                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Katmanı Seç & Hızlı Düzenle</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Tuvalde Tıkla / Çift Tıkla</span></div>
+                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Hassas Katman Kaydırma (Taşıma Modu)</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Ok Tuşları (Shift: 10px)</span></div>
+                <div class="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-zinc-800/60"><span>Tüm Ölçülere Eşitle / Yay</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Sol Panel "Tüm Ölçülere Eşitle"</span></div>
+                <div class="flex justify-between items-center py-1.5"><span>Tam Proje Kaydet (CSV + Ses + Medya + Kartlar)</span><span class="font-mono bg-slate-100 dark:bg-zinc-800 px-2 py-0.5 rounded text-[11px]">Projeyi Kaydet (.gks)</span></div>
             </div>
         </div>
     </div>
@@ -8797,8 +8632,7 @@
                                     <span class="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-mono timeline-layer-count">0</span>
                                 </span>
                                 <select class="timeline-layer-filter bg-[#10121a] text-zinc-300 border border-zinc-700 rounded-md px-2 py-0.5 text-[10px] font-semibold outline-none cursor-pointer">
-                                    <option value="all">Tüm Katmanlar + Arka Plan Görselleri</option>
-                                    <option value="bg_images">🖼️ Sadece Arka Plan Görselleri (Slayt Süreleri)</option>
+                                    <option value="all">Tüm Görsel Katmanları (Grup + Metin + Rozet + Logo)</option>
                                     <option value="editable">Sadece Değişken Katmanlar ([EDITABLE])</option>
                                     <option value="badges">Sadece Rozet & Logolar</option>
                                 </select>
@@ -9921,32 +9755,7 @@
                 const encodedUrl = encodeURIComponent(cleanUrl);
                 const encodedUrlNoProto = encodeURIComponent(cleanUrl.replace(/^https?:\/\//, ''));
 
-                // ÇOKLU EKİP (4+ EŞZAMANLI KULLANICI) OFİS IP KORUMALI KADEMELİ GÖRSEL ÇEKİCİ:
-                // Önce doğrudan CDN denenir (0 proxy trafiği). CORS engeli varsa önce yüksek kapasiteli wsrv.nl CDN, en son jitter'lı yedek proxyler kullanılır!
-                const fetchSingleCandidateBlob = async (targetUrl, timeoutMs = 5500) => {
-                    const ctrl = new AbortController();
-                    const tid = setTimeout(() => ctrl.abort(), timeoutMs);
-                    try {
-                        const response = await fetch(targetUrl, {
-                            signal: ctrl.signal,
-                            cache: 'force-cache',
-                            referrerPolicy: 'no-referrer'
-                        });
-                        clearTimeout(tid);
-                        if (!response.ok) throw new Error('HTTP ' + response.status);
-                        const blob = await response.blob();
-                        if (!blob || blob.size < 64) throw new Error('Empty blob');
-                        if (!blob.type.startsWith('image/') && blob.type !== 'application/octet-stream') {
-                            throw new Error('Not image');
-                        }
-                        return blob;
-                    } catch (err) {
-                        clearTimeout(tid);
-                        throw err;
-                    }
-                };
-
-                const raceWithAbortCleanup = async (urls, timeoutMs = 9000) => {
+                const raceWithAbortCleanup = async (urls, timeoutMs = 9500) => {
                     const controllers = urls.map(() => new AbortController());
                     const timers = [];
                     try {
@@ -9968,6 +9777,7 @@
                                     if (!blob.type.startsWith('image/') && blob.type !== 'application/octet-stream') {
                                         return reject(new Error('Not image'));
                                     }
+                                    // Kazanan belli olduğu an diğer tüm açık bağlantıları derhal iptal et (Tarayıcı soket havuzunu korur!)
                                     controllers.forEach((c, cIdx) => { if (cIdx !== idx) { try { c.abort(); } catch (e) {} } });
                                     resolve(blob);
                                 } catch (err) {
@@ -9982,31 +9792,28 @@
                     }
                 };
 
+                const stage1Urls = [
+                    cleanUrl,
+                    `https://wsrv.nl/?url=${encodedUrlNoProto}&n=-1`,
+                    `https://corsproxy.io/?${encodedUrl}`
+                ];
+                const stage2Urls = [
+                    `https://api.allorigins.win/raw?url=${encodedUrl}`,
+                    `https://api.codetabs.com/v1/proxy?quest=${cleanUrl}`,
+                    `https://wsrv.nl/?url=${encodedUrl}&n=-1`
+                ];
+
                 let finalBlob = null;
-                // 1. Adım: Doğrudan CDN (Ofis ağındaki 4+ kullanıcı aynı anda çalışırken proxy limitlerini %0 tüketir)
-                try {
-                    finalBlob = await fetchSingleCandidateBlob(cleanUrl, 3200);
-                } catch (directErr) {
-                    // 2. Adım: Yüksek kapasiteli Cloudflare Image CDN (wsrv.nl)
+                for (let attempt = 1; attempt <= 2; attempt++) {
                     try {
-                        finalBlob = await raceWithAbortCleanup([
-                            `https://wsrv.nl/?url=${encodedUrlNoProto}&n=-1`,
-                            `https://wsrv.nl/?url=${encodedUrl}&n=-1`
-                        ], 7500);
-                    } catch (cdnErr) {
-                        // 3. Adım: Yedek CORS Proxy Havuzu (Rastgele jitter ile aynı IP'den çakışmayı engeller)
-                        await new Promise(r => setTimeout(r, 60 + Math.floor(Math.random() * 180)));
-                        const fallbackProxies = [
-                            `https://corsproxy.io/?${encodedUrl}`,
-                            `https://api.allorigins.win/raw?url=${encodedUrl}`,
-                            `https://api.codetabs.com/v1/proxy?quest=${cleanUrl}`
-                        ];
-                        for (let attempt = 1; attempt <= 2 && !finalBlob; attempt++) {
-                            try {
-                                finalBlob = await raceWithAbortCleanup(fallbackProxies, 10500);
-                            } catch (proxyErr) {
-                                if (attempt < 2) await new Promise(r => setTimeout(r, 350 + Math.floor(Math.random() * 250)));
-                            }
+                        finalBlob = await raceWithAbortCleanup(stage1Urls, 8500);
+                        if (finalBlob) break;
+                    } catch (e1) {
+                        try {
+                            finalBlob = await raceWithAbortCleanup(stage2Urls, 11000);
+                            if (finalBlob) break;
+                        } catch (e2) {
+                            if (attempt < 2) await new Promise(r => setTimeout(r, 350));
                         }
                     }
                 }
@@ -10144,14 +9951,9 @@
                     }
                 };
                 try {
-                    return await raceUrls([cleanUrl], 2400);
-                } catch (e0) {
-                    try {
-                        return await raceUrls([`https://wsrv.nl/?url=${encodedUrlNoProto}&w=960&q=84&n=-1`, `https://wsrv.nl/?url=${encodedUrl}&w=960&q=84&n=-1`], 6500);
-                    } catch (e1) {
-                        await new Promise(r => setTimeout(r, 50 + Math.floor(Math.random() * 160)));
-                        return await raceUrls([`https://corsproxy.io/?${encodedUrl}`, `https://api.allorigins.win/raw?url=${encodedUrl}`], 9500);
-                    }
+                    return await raceUrls([cleanUrl, `https://wsrv.nl/?url=${encodedUrlNoProto}&w=960&q=84&n=-1`, `https://corsproxy.io/?${encodedUrl}`], 7500);
+                } catch (e1) {
+                    return await raceUrls([`https://api.allorigins.win/raw?url=${encodedUrl}`, `https://wsrv.nl/?url=${encodedUrl}&w=960&q=84&n=-1`], 9500);
                 }
             },
             async blobToStageThumbUrl(srcBlob, maxEdge = 920) {
@@ -10235,279 +10037,11 @@
             }
         };
 
-        // ============================================================================
-        // ÇOKLU EKİP (4+ EŞZAMANLI KULLANICI) FIGMA API 429 KALKANI & KALICI INDEXEDDB ÖNBELLEĞİ
-        // ============================================================================
-        window.FigmaTeamSafeClient = {
-            dbName: 'etstur_figma_idb_v2',
-            storeName: 'figma_files',
-            inFlight: new Map(),
-            tokenIdx: 0,
-            parseTokens(rawTokenStr) {
-                return String(rawTokenStr || '')
-                    .split(/[,;\s]+/)
-                    .map(t => t.trim())
-                    .filter(Boolean);
-            },
-            openDB() {
-                return new Promise((resolve, reject) => {
-                    if (!window.indexedDB) return reject(new Error('No IDB'));
-                    const req = indexedDB.open(this.dbName, 1);
-                    req.onupgradeneeded = (ev) => {
-                        const db = ev.target.result;
-                        if (!db.objectStoreNames.contains(this.storeName)) {
-                            db.createObjectStore(this.storeName);
-                        }
-                    };
-                    req.onsuccess = (ev) => resolve(ev.target.result);
-                    req.onerror = (ev) => reject(ev.target.error);
-                });
-            },
-            async getCachedBundle(fileId) {
-                if (!fileId) return null;
-                if (window.figmaGlobalCache && window.figmaGlobalCache[fileId]) {
-                    return window.figmaGlobalCache[fileId];
-                }
-                try {
-                    const db = await this.openDB();
-                    const res = await new Promise((resolve) => {
-                        const tx = db.transaction(this.storeName, 'readonly');
-                        const g = tx.objectStore(this.storeName).get(fileId);
-                        g.onsuccess = () => resolve(g.result || null);
-                        g.onerror = () => resolve(null);
-                    });
-                    db.close();
-                    if (res && res.data && Array.isArray(res.availableFrames) && res.availableFrames.length > 0) {
-                        window.figmaGlobalCache[fileId] = res;
-                        return res;
-                    }
-                } catch (e) {}
-                return null;
-            },
-            async saveCachedBundle(fileId, bundle) {
-                if (!fileId || !bundle) return;
-                window.figmaGlobalCache[fileId] = bundle;
-                try {
-                    const db = await this.openDB();
-                    await new Promise((resolve) => {
-                        const tx = db.transaction(this.storeName, 'readwrite');
-                        tx.objectStore(this.storeName).put({ ...bundle, cachedAt: Date.now() }, fileId);
-                        tx.oncomplete = () => resolve();
-                        tx.onerror = () => resolve();
-                    });
-                    db.close();
-                } catch (e) {}
-            },
-            async invalidate(fileId) {
-                if (!fileId) return;
-                if (window.figmaGlobalCache) {
-                    Object.keys(window.figmaGlobalCache).forEach(k => {
-                        if (k === fileId || k.startsWith(fileId + '_')) delete window.figmaGlobalCache[k];
-                    });
-                }
-                try {
-                    const db = await this.openDB();
-                    await new Promise((resolve) => {
-                        const tx = db.transaction(this.storeName, 'readwrite');
-                        tx.objectStore(this.storeName).delete(fileId);
-                        tx.oncomplete = () => resolve();
-                        tx.onerror = () => resolve();
-                    });
-                    db.close();
-                } catch (e) {}
-            },
-            async fetchJsonWithRetry(url, rawTokenStr, maxAttempts = 4) {
-                const tokens = this.parseTokens(rawTokenStr);
-                if (tokens.length === 0) throw new Error('Geçerli Figma Token girilmedi.');
-                let lastErr = null;
-
-                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-                    const activeToken = tokens[(this.tokenIdx + attempt - 1) % tokens.length];
-                    try {
-                        const ctrl = new AbortController();
-                        const tid = setTimeout(() => ctrl.abort(), 22000);
-                        const resp = await fetch(url, {
-                            headers: { 'X-Figma-Token': activeToken },
-                            signal: ctrl.signal
-                        });
-                        clearTimeout(tid);
-
-                        if (resp.ok) {
-                            return await resp.json();
-                        }
-
-                        if (resp.status === 403 || resp.status === 401) {
-                            lastErr = new Error('Figma Token yetkisi geçersiz veya dosyaya erişim izni yok (403).');
-                            if (tokens.length <= 1) throw lastErr;
-                            continue;
-                        }
-
-                        if (resp.status === 404) {
-                            throw new Error('Figma dosyası bulunamadı (File ID kontrol edin).');
-                        }
-
-                        if (resp.status === 429 || resp.status >= 500) {
-                            this.tokenIdx = (this.tokenIdx + 1) % tokens.length;
-                            const retryHeader = parseFloat(resp.headers.get('Retry-After') || '0');
-                            const waitMs = retryHeader > 0
-                                ? Math.min(12000, Math.round(retryHeader * 1000) + Math.floor(Math.random() * 450))
-                                : Math.min(9000, (1400 * Math.pow(1.8, attempt - 1)) + Math.floor(Math.random() * 650));
-                            if (attempt < maxAttempts) {
-                                if (window.showToast && resp.status === 429) {
-                                    window.showToast(`⏳ Ekip yoğunluk koruması: Figma API sırası bekleniyor (${(waitMs / 1000).toFixed(1)}sn)...`, 'info');
-                                }
-                                await new Promise(r => setTimeout(r, waitMs));
-                                continue;
-                            }
-                            lastErr = new Error('Figma API şu an çok yoğun (429). Lütfen birkaç saniye sonra tekrar deneyin.');
-                        } else {
-                            lastErr = new Error(`Figma API hatası (HTTP ${resp.status}).`);
-                        }
-                    } catch (err) {
-                        lastErr = err;
-                        if (err && (String(err.message).includes('403') || String(err.message).includes('404'))) throw err;
-                        if (attempt < maxAttempts) {
-                            await new Promise(r => setTimeout(r, 900 * attempt + Math.floor(Math.random() * 400)));
-                        }
-                    }
-                }
-                throw lastErr || new Error('Figma bağlantısı kurulamadı.');
-            },
-            async loadTemplateBundle(fileId, rawTokenStr, imageCacheObj, forceRefresh = false) {
-                if (!forceRefresh) {
-                    const cached = await this.getCachedBundle(fileId);
-                    if (cached) return { ...cached, fromCache: true };
-                }
-                if (this.inFlight.has(fileId)) {
-                    return await this.inFlight.get(fileId);
-                }
-
-                const task = (async () => {
-                    const data = await this.fetchJsonWithRetry(`https://api.figma.com/v1/files/${fileId}`, rawTokenStr, 4);
-                    const firstPage = data && data.document && data.document.children ? data.document.children[0] : null;
-                    if (!firstPage) throw new Error('Figma sayfa yapısı okunamadı.');
-
-                    const frames = (firstPage.children || []).filter(c => c.type === 'FRAME');
-                    if (frames.length === 0) throw new Error('Sahne (Frame) bulunamadı.');
-
-                    const images = {};
-                    try {
-                        const imgJson = await this.fetchJsonWithRetry(`https://api.figma.com/v1/files/${fileId}/images`, rawTokenStr, 3);
-                        const rawImages = (imgJson && imgJson.meta && imgJson.meta.images) ? imgJson.meta.images : {};
-                        const entries = Object.entries(rawImages).filter(([, u]) => Boolean(u));
-                        let imgCursor = 0;
-                        const imgWorkers = Array.from({ length: Math.min(6, Math.max(1, entries.length)) }, async () => {
-                            while (imgCursor < entries.length) {
-                                const [ref, url] = entries[imgCursor++];
-                                try {
-                                    images[ref] = await window.fetchImageAsBase64(url, imageCacheObj);
-                                } catch (e) {
-                                    images[ref] = url;
-                                }
-                            }
-                        });
-                        await Promise.all(imgWorkers);
-                    } catch (imgErr) {
-                        console.warn('Figma görsel referansları kısmi alındı:', imgErr);
-                    }
-
-                    const svgs = {};
-                    const vectorIds = [];
-                    const collectVectors = (n) => {
-                        if (!n || n.visible === false) return;
-                        if (['VECTOR', 'BOOLEAN_OPERATION', 'ELLIPSE', 'REGULAR_POLYGON', 'STAR', 'LINE'].includes(n.type)) {
-                            vectorIds.push(n.id);
-                        } else if (Array.isArray(n.children)) {
-                            n.children.forEach(collectVectors);
-                        }
-                    };
-                    frames.forEach(collectVectors);
-
-                    // 120'şerli büyük paketler ile Figma Tier-1 istek sayısını %60 azalt (4+ kişi aynı anda girerken 429'u önler!)
-                    if (vectorIds.length > 0) {
-                        for (let i = 0; i < vectorIds.length; i += 120) {
-                            const chunk = vectorIds.slice(i, i + 120);
-                            try {
-                                const svgData = await this.fetchJsonWithRetry(
-                                    `https://api.figma.com/v1/images/${fileId}?ids=${encodeURIComponent(chunk.join(','))}&format=svg`,
-                                    rawTokenStr,
-                                    4
-                                );
-                                const svgEntries = Object.entries((svgData && svgData.images) || {}).filter(([, u]) => Boolean(u));
-                                let sCur = 0;
-                                const sWorkers = Array.from({ length: Math.min(8, Math.max(1, svgEntries.length)) }, async () => {
-                                    while (sCur < svgEntries.length) {
-                                        const [id, url] = svgEntries[sCur++];
-                                        try {
-                                            const r = await fetch(url, { cache: 'force-cache', referrerPolicy: 'no-referrer' });
-                                            if (r.ok) svgs[id] = await r.text();
-                                        } catch (e) {}
-                                    }
-                                });
-                                await Promise.all(sWorkers);
-                            } catch (svgErr) {
-                                console.warn('SVG paketi kısmi atlandı:', svgErr);
-                            }
-                        }
-                    }
-
-                    const bundle = { data, images, svgs, availableFrames: frames };
-                    await this.saveCachedBundle(fileId, bundle);
-                    return { ...bundle, fromCache: false };
-                })();
-
-                this.inFlight.set(fileId, task);
-                try {
-                    return await task;
-                } finally {
-                    this.inFlight.delete(fileId);
-                }
-            }
-        };
-
-        // ============================================================================
-        // MERKEZİ KLAVYE KISAYOL MOTORU (TÜRKÇE Q/F, MAC CMD+Z / CMD+SHIFT+Z, WIN CTRL+Z / CTRL+Y, MODAL UYUMLU)
-        // ============================================================================
         window.addEventListener('keydown', (e) => {
-            const activeEl = document.activeElement;
-            const tag = activeEl ? activeEl.tagName : '';
-            const isTextInput = Boolean(
-                activeEl && (
-                    tag === 'TEXTAREA' ||
-                    activeEl.isContentEditable ||
-                    (tag === 'INPUT' && !['range', 'checkbox', 'radio', 'color', 'button', 'file'].includes((activeEl.type || '').toLowerCase()))
-                )
-            );
-            const isModalSearchOrAuthInput = Boolean(
-                isTextInput && activeEl.matches && activeEl.matches(
-                    '#cmd-palette-input, .login-token, .login-file-id, .csv-url-input, .search-input, .left-layer-search, .ae-layer-search, .mf-layer-search'
-                )
-            );
-
-            const openMiniFigma = document.querySelector('.mini-figma-drawer:not(.hidden)');
-            const openTimeline = document.querySelector('.timeline-drawer.open');
-            const keyLower = (e.key || '').toLowerCase();
-            const code = e.code || '';
-            const hasCmdOrCtrl = Boolean(e.ctrlKey || e.metaKey);
-
-            // 1) '?' ile Kısayol Rehberini Aç / Kapat
-            if (!hasCmdOrCtrl && !isTextInput && e.key === '?') {
-                const scModal = document.getElementById('shortcuts-modal');
-                if (scModal) {
-                    e.preventDefault();
-                    const willOpen = scModal.classList.contains('hidden');
-                    scModal.classList.toggle('hidden', !willOpen);
-                    scModal.classList.toggle('flex', willOpen);
-                    return;
-                }
-            }
-
-            // 2) ESC ile Açık Pencereleri / Çekmeceleri Sırayla Güvenle Kapat
             if (e.key === 'Escape') {
                 const scModal = document.getElementById('shortcuts-modal');
                 if (scModal && !scModal.classList.contains('hidden')) {
                     scModal.classList.add('hidden');
-                    scModal.classList.remove('flex');
                     return;
                 }
                 const themePop = document.getElementById('theme-studio-popover');
@@ -10522,7 +10056,7 @@
                     return;
                 }
                 const mediaDrawer = document.getElementById('media-pool-drawer');
-                if (mediaDrawer && (mediaDrawer.style.right === '0px' || mediaDrawer.style.right === '0')) {
+                if (mediaDrawer && mediaDrawer.style.right === '0px') {
                     mediaDrawer.style.right = '-350px';
                     const toggleBtn = document.getElementById('toggle-media-pool-btn');
                     if (toggleBtn) toggleBtn.classList.remove('translate-x-12');
@@ -10534,111 +10068,42 @@
                     activeCsvModal.classList.remove('flex');
                     return;
                 }
-                if (openMiniFigma && !isTextInput) {
-                    if (window.__activeMiniFigmaSession && typeof window.__activeMiniFigmaSession.handleEscape === 'function') {
-                        e.preventDefault();
-                        window.__activeMiniFigmaSession.handleEscape();
-                        return;
-                    }
-                }
-                if (openTimeline && !isTextInput) {
-                    const saveCloseBtn = openTimeline.querySelector('.timeline-save-btn');
-                    if (saveCloseBtn) {
-                        e.preventDefault();
-                        saveCloseBtn.click();
-                        return;
-                    }
-                }
             }
-
-            // 3) AE TIMELINE AÇIKKEN SPACE (OYNAT/DURAKLAT) VE SOL/SAĞ OK (KARE İLERLET)
-            if (openTimeline && !isTextInput && !hasCmdOrCtrl) {
-                if (code === 'Space') {
-                    e.preventDefault();
-                    const pBtn = openTimeline.querySelector('.timeline-play-btn');
-                    if (pBtn) pBtn.click();
-                    return;
-                }
-                if (e.key === 'ArrowLeft') {
-                    e.preventDefault();
-                    const prevBtn = openTimeline.querySelector('.ae-prev-frame-btn');
-                    if (prevBtn) prevBtn.click();
-                    return;
-                }
-                if (e.key === 'ArrowRight') {
-                    e.preventDefault();
-                    const nextBtn = openTimeline.querySelector('.ae-next-frame-btn');
-                    if (nextBtn) nextBtn.click();
-                    return;
-                }
-                if (e.key === 'Home') {
-                    e.preventDefault();
-                    const firstBtn = openTimeline.querySelector('.ae-first-frame-btn');
-                    if (firstBtn) firstBtn.click();
-                    return;
-                }
-            }
-
-            // 4) MINI FIGMA (TASARLA) STÜDYOSU AÇIKKEN ÇOĞALT (CTRL+D), SİL (DEL/BACKSPACE) VE OKLARLA KAYDIRMA
-            if (openMiniFigma && window.__activeMiniFigmaSession) {
-                if (hasCmdOrCtrl && (code === 'KeyD' || keyLower === 'd') && !isTextInput) {
-                    e.preventDefault();
-                    window.__activeMiniFigmaSession.duplicateSelected && window.__activeMiniFigmaSession.duplicateSelected();
-                    return;
-                }
-                if (!hasCmdOrCtrl && !isTextInput && (e.key === 'Delete' || e.key === 'Backspace')) {
-                    e.preventDefault();
-                    window.__activeMiniFigmaSession.deleteSelected && window.__activeMiniFigmaSession.deleteSelected();
-                    return;
-                }
-                if (!hasCmdOrCtrl && !isTextInput && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-                    if (window.__activeMiniFigmaSession.nudgeSelected && window.__activeMiniFigmaSession.nudgeSelected(e.key, e.shiftKey ? 10 : 1)) {
+            if (e.code === 'Space') {
+                const activeEl = document.activeElement;
+                const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable);
+                if (!isTyping) {
+                    const openTimeline = document.querySelector('.timeline-drawer:not(.hidden)');
+                    if (openTimeline) {
                         e.preventDefault();
+                        const pBtn = openTimeline.querySelector('.timeline-play-btn');
+                        if (pBtn) pBtn.click();
                         return;
                     }
                 }
             }
-
-            // 5) PROJEYİ KAYDET (CTRL/CMD + S)
-            if (hasCmdOrCtrl && (code === 'KeyS' || keyLower === 's')) {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
                 e.preventDefault();
                 if (exportProjectBtn && !exportProjectBtn.disabled) exportProjectBtn.click();
                 return;
             }
-
-            // 6) GERİ AL (UNDO: CTRL/CMD + Z) & İLERİ AL (REDO: CTRL+Y / CMD+Y / CTRL+SHIFT+Z / CMD+SHIFT+Z)
-            const isZ = (code === 'KeyZ' || keyLower === 'z');
-            const isY = (code === 'KeyY' || keyLower === 'y');
-            if (hasCmdOrCtrl && !e.altKey && (isZ || isY)) {
-                // Arama kutusu veya giriş token alanında yazarken tarayıcının doğal metin geri almasını koru
-                if (isModalSearchOrAuthInput) return;
-
-                const isRedoAction = isY || (isZ && e.shiftKey);
+            if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
                 e.preventDefault();
-
-                // 6a) Eğer Mini Figma (❖ Tasarla) açıksa onun canlı geçmişini geri/ileri al
-                if (openMiniFigma && window.__activeMiniFigmaSession) {
-                    if (isRedoAction) window.__activeMiniFigmaSession.redo();
-                    else window.__activeMiniFigmaSession.undo();
-                    return;
+                const activeEl = document.activeElement;
+                if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable)) {
+                    activeEl.blur();
                 }
-
-                // 6b) Eğer After Effects Timeline açıksa onun canlı animasyon/görsel süresi geçmişini geri/ileri al
-                if (openTimeline && window.__activeTimelineSession) {
-                    if (isRedoAction) window.__activeTimelineSession.redo();
-                    else window.__activeTimelineSession.undo();
-                    return;
-                }
-
-                // 6c) Ana Stüdyo (Şablon Modu + 2400+ Toplu Kart Sahnesi)
                 const activeRoot = (activeWorkspaceId && document.getElementById(activeWorkspaceId))
-                    || document.querySelector('.workspace-root:not(.hidden)')
                     || document.querySelector('.workspace-root')
+                    || document.querySelector('.workspace-container')
                     || document;
-                if (!activeRoot || typeof activeRoot.undo !== 'function') return;
-
-                if (isRedoAction) activeRoot.redo();
-                else activeRoot.undo();
+                if (!activeRoot || !activeRoot.undo) return;
+                if (e.key.toLowerCase() === 'z') {
+                    if (e.shiftKey) { activeRoot.redo(); }
+                    else { activeRoot.undo(); }
+                } else if (e.key.toLowerCase() === 'y') {
+                    activeRoot.redo();
+                }
             }
         });
 
@@ -13168,7 +12633,6 @@
             let aeStopActivePlayback = null;
             timelineCloseBtn.addEventListener('click', () => { 
                 if (typeof aeStopActivePlayback === 'function') aeStopActivePlayback();
-                window.__activeTimelineSession = null;
                 timelineModal.classList.remove('open');
                 setTimeout(() => { timelinePreviewWrapper.innerHTML = ''; }, 300);
             });
@@ -13229,11 +12693,8 @@
                 if (!sourceCardData || !targetCardData || !sourceCardData.groups || !targetCardData.groups) return;
                 const srcAnims = sourceCardData.groups.__layerAnimations__ || {};
                 targetCardData.groups.__layerAnimations__ = JSON.parse(JSON.stringify(srcAnims));
-                if (sourceCardData.groups.__bgSlideTimeline__) {
-                    targetCardData.groups.__bgSlideTimeline__ = JSON.parse(JSON.stringify(sourceCardData.groups.__bgSlideTimeline__));
-                }
                 for (const key in sourceCardData.groups) {
-                    if (key.startsWith('__')) continue;
+                    if (key === '__layerAnimations__' || key === '__customNodeTransforms__') continue;
                     const sg = sourceCardData.groups[key];
                     const tg = targetCardData.groups[key];
                     if (sg && tg) {
@@ -13273,7 +12734,7 @@
                 timelineModal.classList.add('open');
 
                 let pxPerSec = parseInt(timelineZoomSlider.value) || 55;
-                let vidDuration = parseFloat(videoDurationInput.value) || 15;
+                const vidDuration = parseFloat(videoDurationInput.value) || 15;
                 const fps = 30;
                 let aeCurrentTime = 0;
                 let aeIsPlaying = false;
@@ -13283,12 +12744,6 @@
                 let aeSelectedTrackId = null;
                 let aeSearchQuery = '';
                 const expandedAeTrackIds = new Set();
-
-                if (!cardData.groups.__bgSlideTimeline__ || typeof cardData.groups.__bgSlideTimeline__ !== 'object') {
-                    cardData.groups.__bgSlideTimeline__ = { lockManualDurations: false, syncVideoDuration: false, slides: {} };
-                } else if (!cardData.groups.__bgSlideTimeline__.slides) {
-                    cardData.groups.__bgSlideTimeline__.slides = {};
-                }
 
                 const aeFrameCounter = timelineModal.querySelector('.ae-frame-counter');
                 const aeFirstFrameBtn = timelineModal.querySelector('.ae-first-frame-btn');
@@ -13464,46 +12919,6 @@
                     });
                 };
 
-                const setTimelineVidDuration = (nextDur) => {
-                    const cleanD = parseFloat(Math.max(1, Math.min(180, Number(nextDur) || 15)).toFixed(2));
-                    vidDuration = cleanD;
-                    if (videoDurationInput) videoDurationInput.value = String(cleanD);
-                    if (aeMonitorScrubber) aeMonitorScrubber.max = String(cleanD);
-                    if (aeMonitorTotTime) aeMonitorTotTime.textContent = `${cleanD.toFixed(2)}s`;
-                };
-
-                const getTimelineDefaultSlidePool = () => {
-                    const effectMode = (multiImageModeSelect && multiImageModeSelect.value) || 'kenburns';
-                    if (effectMode === 'none') return ['none'];
-                    return window.getSlideEffectPool ? window.getSlideEffectPool(root) : ['zoomIn', 'panRight', 'zoomOut', 'panLeft'];
-                };
-
-                const computeCurrentBgSchedule = () => {
-                    return window.buildBgSlideSchedule(
-                        loadedBgMedia.length,
-                        vidDuration,
-                        cardData.groups.__bgSlideTimeline__,
-                        getTimelineDefaultSlidePool()
-                    );
-                };
-
-                const buildMiniThumbUrl = (imgEl, fallbackStr) => {
-                    if (!imgEl) return fallbackStr || '';
-                    try {
-                        const c = document.createElement('canvas');
-                        c.width = 72;
-                        c.height = 72;
-                        const cx = c.getContext('2d');
-                        const iw = imgEl.naturalWidth || imgEl.width || 72;
-                        const ih = imgEl.naturalHeight || imgEl.height || 72;
-                        const s = Math.max(72 / iw, 72 / ih);
-                        cx.drawImage(imgEl, (72 - iw * s) / 2, (72 - ih * s) / 2, iw * s, ih * s);
-                        return c.toDataURL('image/jpeg', 0.72);
-                    } catch (e) {
-                        return fallbackStr || '';
-                    }
-                };
-
                 const renderBgAtTime = (tSec) => {
                     if (!bgCtx || loadedBgMedia.length === 0) return;
                     clearCloneStaticBackgroundsForCanvas();
@@ -13515,18 +12930,20 @@
                     bgCtx.save();
                     if (atmFilter && atmFilter !== 'none') bgCtx.filter = atmFilter;
 
-                    const bgSchedule = computeCurrentBgSchedule();
-                    const bgState = window.resolveBgSlideStateAtTime(bgSchedule, loadedBgMedia, tSec);
+                    const numBg = loadedBgMedia.length;
+                    const timePerBg = vidDuration / numBg;
+                    const currentIndex = Math.min(Math.floor(tSec / timePerBg), numBg - 1);
+                    const timeInSlide = tSec - (currentIndex * timePerBg);
+                    const slideProg = Math.min(Math.max(timeInSlide / Math.max(0.1, timePerBg), 0), 1);
 
-                    if (aeActiveSlideBadge && bgState) {
-                        const curMedia = bgState.activeData;
-                        const effNames = { zoomIn: 'Zoom In', zoomOut: 'Zoom Out', panLeft: 'Pan Sol', panRight: 'Pan Sağ', panUp: 'Pan Yukarı', panDown: 'Pan Aşağı', none: 'Sabit' };
+                    if (aeActiveSlideBadge) {
+                        const curMedia = loadedBgMedia[currentIndex];
                         aeActiveSlideBadge.textContent = curMedia && curMedia.isVideo
-                            ? `🎬 Arka Plan Videosu #${bgState.origIndex + 1} (${bgState.segDuration.toFixed(1)}s)`
-                            : `🖼️ Görsel #${bgState.origIndex + 1}/${loadedBgMedia.length} (${bgState.segDuration.toFixed(1)}s) • ${effNames[bgState.activeEffect] || 'Ken Burns'}`;
+                            ? `🎬 Arka Plan Videosu Oynatılıyor (${tSec.toFixed(1)}s)`
+                            : `🖼️ Görsel ${currentIndex + 1}/${numBg} • Ken Burns Kamera Aktif`;
                     }
 
-                    const drawKenBurnsMedia = (mediaObj, prog, effectType, alpha = 1) => {
+                    const drawKenBurnsMedia = (mediaObj, prog, idx, alpha = 1) => {
                         if (!mediaObj) return;
                         bgCtx.save();
                         bgCtx.globalAlpha = alpha;
@@ -13545,25 +12962,29 @@
                         if (!img) { bgCtx.restore(); return; }
                         const iw = img.naturalWidth || img.width || w;
                         const ih = img.naturalHeight || img.height || h;
-                        const scaleFit = Math.max(w / iw, h / ih);
-                        let dw = iw * scaleFit, dh = ih * scaleFit, dx = (w - dw) / 2, dy = (h - dh) / 2;
-
-                        if (effectType === 'zoomIn') { const s = 1.0 + (0.14 * prog); dw *= s; dh *= s; dx = (w - dw) / 2; dy = (h - dh) / 2; }
-                        else if (effectType === 'zoomOut') { const s = 1.14 - (0.14 * prog); dw *= s; dh *= s; dx = (w - dw) / 2; dy = (h - dh) / 2; }
-                        else if (effectType === 'panLeft') { const s = 1.1; dw *= s; dh *= s; dy = (h - dh) / 2; dx = ((w - dw) / 2) + (dw * 0.05 * prog); }
-                        else if (effectType === 'panRight') { const s = 1.1; dw *= s; dh *= s; dy = (h - dh) / 2; dx = ((w - dw) / 2) - (dw * 0.05 * prog); }
-                        else if (effectType === 'panUp') { const s = 1.1; dw *= s; dh *= s; dx = (w - dw) / 2; dy = ((h - dh) / 2) + (dh * 0.05 * prog); }
-                        else if (effectType === 'panDown') { const s = 1.1; dw *= s; dh *= s; dx = (w - dw) / 2; dy = ((h - dh) / 2) - (dh * 0.05 * prog); }
-
-                        try { bgCtx.drawImage(img, dx, dy, dw, dh); } catch (e) {}
+                        const baseScale = Math.max(w / iw, h / ih) * 1.14;
+                        let s = baseScale, tx = 0, ty = 0;
+                        const effectMode = (multiImageModeSelect && multiImageModeSelect.value) || 'kenburns';
+                        if (effectMode !== 'none') {
+                            const dirs = ['zoomIn', 'panRight', 'zoomOut', 'panLeft'];
+                            const dir = dirs[idx % dirs.length];
+                            if (dir === 'zoomIn') s = baseScale * (1 + 0.10 * prog);
+                            else if (dir === 'zoomOut') s = baseScale * (1.10 - 0.10 * prog);
+                            else if (dir === 'panLeft') tx = (w * 0.04) - (w * 0.08 * prog);
+                            else if (dir === 'panRight') tx = -(w * 0.04) + (w * 0.08 * prog);
+                        }
+                        const dw = iw * s;
+                        const dh = ih * s;
+                        try { bgCtx.drawImage(img, (w - dw) / 2 + tx, (h - dh) / 2 + ty, dw, dh); } catch (e) {}
                         bgCtx.restore();
                     };
 
-                    if (bgState) {
-                        drawKenBurnsMedia(bgState.activeData, bgState.activeProgress, bgState.activeEffect, 1);
-                        if (bgState.nextAlpha > 0 && bgState.nextData) {
-                            drawKenBurnsMedia(bgState.nextData, bgState.nextProgress, bgState.nextEffect, bgState.nextAlpha);
-                        }
+                    drawKenBurnsMedia(loadedBgMedia[currentIndex], slideProg, currentIndex, 1);
+
+                    const transDur = 0.55;
+                    if (numBg > 1 && timeInSlide < transDur && currentIndex > 0) {
+                        const prevAlpha = 1 - (timeInSlide / transDur);
+                        drawKenBurnsMedia(loadedBgMedia[currentIndex - 1], 1.0, currentIndex - 1, prevAlpha);
                     }
                     bgCtx.restore();
                 };
@@ -13571,51 +12992,36 @@
                 if (fallbackBgUrl) {
                     window.loadImageSafe(fallbackBgUrl, 2500).then(img => {
                         if (img && loadedBgMedia.length === 0) {
-                            loadedBgMedia = [{ isVideo: false, img, thumbSrc: buildMiniThumbUrl(img, fallbackBgUrl), label: 'Görsel #1' }];
+                            loadedBgMedia = [{ isVideo: false, img }];
                             renderBgAtTime(aeCurrentTime);
-                            if (typeof renderTimeline === 'function') renderTimeline(false);
                         }
                     }).catch(() => {});
                 }
                 (async () => {
                     try {
                         const maxImgs = parseInt(maxImagesInput.value) || 15;
-                        const bgList = await window.getFrameBgImages(cardWr, cardData.frameName, cardData.rowData, cardData.groups, imageCache, maxImgs, cardData.rawHotelName || cardData.hotelName, localImageFiles);
+                        const bgList = await window.getFrameBgImages(cardWr, cardData.frameName, cardData.rowData, cardData.groups, imageCache, maxImgs, cardData.hotelName, localImageFiles);
                         if (Array.isArray(bgList) && bgList.length > 0) {
                             const resolvedMedia = [];
-                            for (let bIdx = 0; bIdx < bgList.length; bIdx++) {
-                                const src = bgList[bIdx];
+                            for (const src of bgList) {
                                 if (!src) continue;
-                                if (window.isVideoResource && window.isVideoResource(src)) {
+                                if (typeof src === 'string' && (src.startsWith('data:video') || src.includes('.mp4') || src.includes('.webm'))) {
                                     const v = document.createElement('video');
-                                    const bUrl = (src instanceof Blob) ? URL.createObjectURL(src) : null;
-                                    v.src = bUrl || src;
+                                    v.src = src;
                                     v.muted = true;
                                     v.loop = true;
                                     v.playsInline = true;
                                     await new Promise(res => { v.onloadeddata = res; v.onerror = res; setTimeout(res, 1500); });
                                     bgVideoEl = v;
-                                    resolvedMedia.push({ isVideo: true, videoEl: v, thumbSrc: '', label: `Video #${resolvedMedia.length + 1}` });
+                                    resolvedMedia.push({ isVideo: true, videoEl: v });
                                     continue;
                                 }
                                 const img = await window.loadImageSafe(src, 3500);
-                                if (img) {
-                                    resolvedMedia.push({
-                                        isVideo: false,
-                                        img,
-                                        thumbSrc: buildMiniThumbUrl(img, typeof src === 'string' ? src : ''),
-                                        label: `Görsel #${resolvedMedia.length + 1}`
-                                    });
-                                }
+                                if (img) resolvedMedia.push({ isVideo: false, img });
                             }
                             if (resolvedMedia.length > 0) {
                                 loadedBgMedia = resolvedMedia;
-                                const initSched = computeCurrentBgSchedule();
-                                if (initSched.effectiveTotalDuration > vidDuration + 0.05) {
-                                    setTimelineVidDuration(initSched.effectiveTotalDuration);
-                                }
                                 renderBgAtTime(aeCurrentTime);
-                                if (typeof renderTimeline === 'function') renderTimeline(false);
                             }
                         }
                     } catch (e) {}
@@ -14093,15 +13499,12 @@
                         rebuildCloneLayerBindings();
                     }
 
-                    const activeFilterVal = (timelineLayerFilter && timelineLayerFilter.value) || 'all';
-                    const visibleTracks = (activeFilterVal === 'bg_images')
-                        ? []
-                        : (aeSearchQuery
-                            ? currentTracks.filter(t => String(t.cleanName || '').toLowerCase().includes(aeSearchQuery) || String(t.badgeText || '').toLowerCase().includes(aeSearchQuery))
-                            : currentTracks);
+                    const visibleTracks = aeSearchQuery
+                        ? currentTracks.filter(t => String(t.cleanName || '').toLowerCase().includes(aeSearchQuery) || String(t.badgeText || '').toLowerCase().includes(aeSearchQuery))
+                        : currentTracks;
 
                     const layerCountSpan = root.querySelector('.timeline-layer-count');
-                    if (layerCountSpan) layerCountSpan.innerText = visibleTracks.length + loadedBgMedia.length;
+                    if (layerCountSpan) layerCountSpan.innerText = visibleTracks.length;
 
                     timelineRuler.innerHTML = `
                         <div class="timeline-playhead absolute top-0 bottom-[-2400px] w-[2px] bg-[#0d99ff] z-50 pointer-events-none shadow-[0_0_10px_rgba(13,153,255,0.95)]" style="left: ${(aeCurrentTime * pxPerSec)}px;">
@@ -14405,261 +13808,27 @@
                         timelineTracksContainer.appendChild(trackRowWrapper);
                     });
 
-                    // ============================================================================
-                    // ARKA PLAN GÖRSELLERİ (1..N) BAĞIMSIZ SLAYT SÜRESİ & KAMERA HAREKETİ SATIRLARI
-                    // ============================================================================
-                    const bgSchedule = computeCurrentBgSchedule();
-                    const bgHeaderLeft = document.createElement('div');
-                    bgHeaderLeft.className = 'h-9 border-b border-zinc-800 bg-gradient-to-r from-indigo-950/90 via-zinc-900 to-zinc-900 flex items-center justify-between px-2.5 gap-1.5 text-[9.5px] font-bold text-indigo-200 select-none';
-                    bgHeaderLeft.innerHTML = `
-                        <div class="flex items-center gap-1.5 min-w-0">
-                            <span class="px-1.5 py-0.5 rounded bg-indigo-500/25 border border-indigo-400/40 text-[8px] font-black text-indigo-200 shrink-0">SLAYT (${loadedBgMedia.length})</span>
-                            <span class="truncate font-extrabold" title="Arka plandaki tüm görsellerin ekranda kalma süresini ve kamera hareketini ayrı ayrı ayarlayın">🖼️ Arka Plan Görselleri</span>
+                    // EN ALTTA: MASTER ARKA PLAN VİDEO / KEN BURNS SLAYT KATMANI + SES DALGA FORMU (AUDIO WAVEFORM)
+                    const masterHeader = document.createElement('div');
+                    masterHeader.className = 'h-9 border-b border-zinc-800 bg-zinc-900/90 flex items-center justify-between px-2.5 gap-1.5 text-[9.5px] font-bold text-indigo-300';
+                    masterHeader.innerHTML = `
+                        <div class="flex items-center gap-1.5 truncate">
+                            <span class="px-1.5 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-[8px] font-black text-indigo-300">MASTER</span>
+                            <span class="truncate">🎬 Arka Plan Video / Ken Burns Slayt</span>
                         </div>
-                        <div class="flex items-center gap-1 shrink-0">
-                            <button type="button" class="ae-bg-equalize-btn px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-indigo-600 text-zinc-200 hover:text-white border border-zinc-700 text-[8px] font-extrabold cursor-pointer transition-colors" title="Toplam video süresini aktif görsellere eşit olarak böl">⚖️ Eşit Dağıt</button>
-                            <button type="button" class="ae-bg-fitvid-btn px-1.5 py-0.5 rounded bg-indigo-600/40 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-500/40 text-[8px] font-extrabold cursor-pointer transition-colors" title="Toplam video süresini (${vidDuration.toFixed(1)}s) görsellerin süre toplamına (${bgSchedule.slidesTotalDuration.toFixed(1)}s) eşitle">⏱ Videoyu Uydur</button>
+                        <span class="text-[8.5px] font-mono text-zinc-500">${vidDuration.toFixed(1)}s</span>
+                    `;
+                    timelineLayerNames.appendChild(masterHeader);
+
+                    const masterTrack = document.createElement('div');
+                    masterTrack.className = 'h-9 border-b border-zinc-800/70 relative bg-indigo-950/20 flex items-center';
+                    masterTrack.innerHTML = `
+                        <div class="absolute top-1.5 bottom-1.5 left-0 rounded-md bg-gradient-to-r from-indigo-600/60 via-blue-600/50 to-purple-600/60 border border-indigo-400/50 flex items-center justify-between px-3 pointer-events-none" style="width:${vidDuration * pxPerSec}px;">
+                            <span class="text-[8.5px] font-black text-indigo-100 uppercase tracking-wider">🎞️ Kamera Hareketi: ${(multiImageModeSelect && multiImageModeSelect.value) || 'Ken Burns Zoom & Pan'}</span>
+                            <span class="text-[8px] font-mono text-indigo-200">0.0s → ${vidDuration.toFixed(1)}s</span>
                         </div>
                     `;
-                    timelineLayerNames.appendChild(bgHeaderLeft);
-
-                    const bgHeaderRight = document.createElement('div');
-                    bgHeaderRight.className = 'h-9 border-b border-zinc-800/80 relative bg-indigo-950/25 flex items-center';
-                    bgHeaderRight.innerHTML = `
-                        <div class="absolute top-1.5 bottom-1.5 left-0 rounded-md bg-gradient-to-r from-indigo-600/45 via-blue-600/35 to-purple-600/45 border border-indigo-400/40 flex items-center justify-between px-3 pointer-events-none" style="width:${Math.max(40, bgSchedule.slidesTotalDuration * pxPerSec)}px;">
-                            <span class="text-[8.5px] font-black text-indigo-100 uppercase tracking-wider truncate">🎞️ Görsel Akışı: ${bgSchedule.activeSlides.length}/${loadedBgMedia.length} Aktif • Slayt Toplamı: ${bgSchedule.slidesTotalDuration.toFixed(2)}s</span>
-                            <span class="text-[8px] font-mono text-indigo-200 shrink-0">Video: ${vidDuration.toFixed(1)}s</span>
-                        </div>
-                    `;
-                    timelineTracksContainer.appendChild(bgHeaderRight);
-
-                    const eqBtn = bgHeaderLeft.querySelector('.ae-bg-equalize-btn');
-                    if (eqBtn) {
-                        eqBtn.addEventListener('click', (ev) => {
-                            ev.stopPropagation();
-                            if (!cardData.groups.__bgSlideTimeline__) cardData.groups.__bgSlideTimeline__ = { slides: {} };
-                            const slidesObj = cardData.groups.__bgSlideTimeline__.slides || (cardData.groups.__bgSlideTimeline__.slides = {});
-                            let actCnt = 0;
-                            for (let i = 0; i < loadedBgMedia.length; i++) {
-                                if (!(slidesObj[i] && slidesObj[i].muted)) actCnt++;
-                            }
-                            const unit = parseFloat((vidDuration / Math.max(1, actCnt)).toFixed(2));
-                            for (let i = 0; i < loadedBgMedia.length; i++) {
-                                slidesObj[i] = Object.assign({}, slidesObj[i] || {}, { duration: unit });
-                            }
-                            cardData.groups.__bgSlideTimeline__.lockManualDurations = false;
-                            cardData.groups.__bgSlideTimeline__.syncVideoDuration = false;
-                            cardData.isDirty = true;
-                            renderTimeline(false);
-                            seekAeCompToTime(aeCurrentTime, false);
-                            pushAeHistorySnapshot();
-                            queueSave();
-                            window.showToast && window.showToast(`Tüm aktif görseller ${unit.toFixed(2)}sn olarak eşitlendi.`, 'info');
-                        });
-                    }
-
-                    const fitVidBtn = bgHeaderLeft.querySelector('.ae-bg-fitvid-btn');
-                    if (fitVidBtn) {
-                        fitVidBtn.addEventListener('click', (ev) => {
-                            ev.stopPropagation();
-                            const schedNow = computeCurrentBgSchedule();
-                            if (!cardData.groups.__bgSlideTimeline__) cardData.groups.__bgSlideTimeline__ = { slides: {} };
-                            cardData.groups.__bgSlideTimeline__.lockManualDurations = true;
-                            cardData.groups.__bgSlideTimeline__.syncVideoDuration = true;
-                            setTimelineVidDuration(schedNow.slidesTotalDuration);
-                            cardData.isDirty = true;
-                            renderTimeline(false);
-                            seekAeCompToTime(Math.min(aeCurrentTime, vidDuration), false);
-                            pushAeHistorySnapshot();
-                            queueSave();
-                            window.showToast && window.showToast(`Toplam video süresi görsellere eşitlendi (${schedNow.slidesTotalDuration.toFixed(2)}sn)!`, 'success');
-                        });
-                    }
-
-                    const ensureExplicitSlideDurationsLocked = () => {
-                        if (!cardData.groups.__bgSlideTimeline__) cardData.groups.__bgSlideTimeline__ = { slides: {} };
-                        const bgTl = cardData.groups.__bgSlideTimeline__;
-                        if (!bgTl.slides) bgTl.slides = {};
-                        const snapSched = computeCurrentBgSchedule();
-                        snapSched.allSlides.forEach(s => {
-                            if (!bgTl.slides[s.origIndex]) bgTl.slides[s.origIndex] = {};
-                            if (bgTl.slides[s.origIndex].duration === undefined || bgTl.slides[s.origIndex].duration === null) {
-                                bgTl.slides[s.origIndex].duration = parseFloat(s.duration.toFixed(2));
-                            }
-                        });
-                        bgTl.lockManualDurations = true;
-                        return bgTl;
-                    };
-
-                    const slideColors = ['#6366f1', '#0ea5e9', '#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#10b981', '#3b82f6'];
-                    bgSchedule.allSlides.forEach((slideSeg) => {
-                        const sIdx = slideSeg.origIndex;
-                        const mediaItem = loadedBgMedia[sIdx];
-                        if (!mediaItem) return;
-                        const slideLabel = mediaItem.label || `Görsel #${sIdx + 1}`;
-                        if (aeSearchQuery && !slideLabel.toLowerCase().includes(aeSearchQuery) && !'arka plan görsel slayt'.includes(aeSearchQuery)) {
-                            return;
-                        }
-                        const sColor = slideColors[sIdx % slideColors.length];
-                        const curEff = slideSeg.effect || 'auto';
-
-                        // Sol Satır: Göz + Küçük Önizleme (Thumbnail) + Görsel Adı + Kamera Efekti + Süre (sn) Input
-                        const leftSlideRow = document.createElement('div');
-                        leftSlideRow.className = `h-11 border-b border-zinc-800/80 flex items-center justify-between px-2 gap-1.5 bg-[#131520] hover:bg-zinc-800/70 transition-colors select-none ${slideSeg.muted ? 'opacity-45' : ''}`;
-                        leftSlideRow.innerHTML = `
-                            <div class="flex items-center gap-1.5 min-w-0 flex-1">
-                                <button type="button" class="ae-bg-mute-btn w-4 h-4 rounded flex items-center justify-center text-[10px] ${slideSeg.muted ? 'text-zinc-600 bg-zinc-900' : 'text-indigo-300 bg-zinc-800/90'} hover:bg-zinc-700 cursor-pointer shrink-0" title="Bu Görseli Videoda Göster / Gizle">${slideSeg.muted ? '🚫' : '👁'}</button>
-                                <div class="ae-bg-thumb w-7 h-7 rounded-md overflow-hidden border border-white/15 bg-zinc-900 shrink-0 cursor-pointer flex items-center justify-center relative" title="Tıkla ve ${slideLabel} anına git (${slideSeg.start.toFixed(2)}s)">
-                                    ${mediaItem.thumbSrc ? `<img src="${mediaItem.thumbSrc}" class="w-full h-full object-cover" alt="">` : `<span class="text-[10px]">${mediaItem.isVideo ? '🎬' : '🖼️'}</span>`}
-                                </div>
-                                <div class="flex flex-col min-w-0">
-                                    <span class="text-[10px] font-extrabold text-zinc-100 truncate cursor-pointer ae-bg-jump-lbl">${slideLabel}</span>
-                                    <span class="text-[8px] font-mono text-zinc-400 truncate">${slideSeg.muted ? 'Devre Dışı' : `${slideSeg.start.toFixed(1)}s → ${slideSeg.end.toFixed(1)}s`}</span>
-                                </div>
-                            </div>
-                            <div class="flex items-center gap-1 shrink-0">
-                                <select class="ae-bg-eff-select w-[74px] h-6 bg-zinc-900 border border-zinc-700/80 text-[8.5px] font-bold text-indigo-200 rounded px-1 outline-none cursor-pointer" title="Kamera Hareketi">
-                                    <option value="auto" ${curEff === 'auto' ? 'selected' : ''}>Otomatik</option>
-                                    <option value="zoomIn" ${curEff === 'zoomIn' ? 'selected' : ''}>Zoom In</option>
-                                    <option value="zoomOut" ${curEff === 'zoomOut' ? 'selected' : ''}>Zoom Out</option>
-                                    <option value="panLeft" ${curEff === 'panLeft' ? 'selected' : ''}>Pan Sol</option>
-                                    <option value="panRight" ${curEff === 'panRight' ? 'selected' : ''}>Pan Sağ</option>
-                                    <option value="panUp" ${curEff === 'panUp' ? 'selected' : ''}>Pan Yukarı</option>
-                                    <option value="panDown" ${curEff === 'panDown' ? 'selected' : ''}>Pan Aşağı</option>
-                                    <option value="none" ${curEff === 'none' ? 'selected' : ''}>Sabit</option>
-                                </select>
-                                <div class="flex items-center bg-zinc-900 border border-indigo-500/40 focus-within:border-cyan-400 rounded px-1 h-6" title="Bu görselin ekranda kalma süresi (saniye)">
-                                    <input type="number" step="0.1" min="0.3" max="120" class="ae-bg-dur-input w-10 bg-transparent text-[9.5px] font-mono font-extrabold text-amber-300 text-right outline-none" value="${slideSeg.duration.toFixed(2)}">
-                                    <span class="text-[8px] font-mono text-zinc-400 ml-0.5">s</span>
-                                </div>
-                            </div>
-                        `;
-                        timelineLayerNames.appendChild(leftSlideRow);
-
-                        const jumpToThisSlide = () => {
-                            if (slideSeg.muted) return;
-                            if (aeIsPlaying && typeof aeStopActivePlayback === 'function') aeStopActivePlayback(false);
-                            seekAeCompToTime(slideSeg.start + Math.min(0.15, slideSeg.duration * 0.2), true);
-                        };
-                        leftSlideRow.querySelector('.ae-bg-thumb')?.addEventListener('click', jumpToThisSlide);
-                        leftSlideRow.querySelector('.ae-bg-jump-lbl')?.addEventListener('click', jumpToThisSlide);
-
-                        leftSlideRow.querySelector('.ae-bg-mute-btn').addEventListener('click', (ev) => {
-                            ev.stopPropagation();
-                            const bgTl = ensureExplicitSlideDurationsLocked();
-                            bgTl.slides[sIdx] = Object.assign({}, bgTl.slides[sIdx] || {}, { muted: !slideSeg.muted });
-                            cardData.isDirty = true;
-                            renderTimeline(false);
-                            seekAeCompToTime(aeCurrentTime, false);
-                            pushAeHistorySnapshot();
-                            queueSave();
-                        });
-
-                        leftSlideRow.querySelector('.ae-bg-eff-select').addEventListener('change', (ev) => {
-                            ev.stopPropagation();
-                            if (!cardData.groups.__bgSlideTimeline__) cardData.groups.__bgSlideTimeline__ = { slides: {} };
-                            const slidesMap = cardData.groups.__bgSlideTimeline__.slides || (cardData.groups.__bgSlideTimeline__.slides = {});
-                            slidesMap[sIdx] = Object.assign({}, slidesMap[sIdx] || {}, { effect: ev.target.value });
-                            cardData.isDirty = true;
-                            renderTimeline(false);
-                            playQuickSnippet(slideSeg.start, Math.min(vidDuration, slideSeg.end));
-                            pushAeHistorySnapshot();
-                            queueSave();
-                        });
-
-                        leftSlideRow.querySelector('.ae-bg-dur-input').addEventListener('change', (ev) => {
-                            ev.stopPropagation();
-                            const nextDur = Math.max(0.3, Math.min(120, parseFloat(ev.target.value) || slideSeg.duration));
-                            const bgTl = ensureExplicitSlideDurationsLocked();
-                            bgTl.slides[sIdx].duration = parseFloat(nextDur.toFixed(2));
-                            const updatedSched = computeCurrentBgSchedule();
-                            if (bgTl.syncVideoDuration || updatedSched.slidesTotalDuration > vidDuration + 0.05) {
-                                setTimelineVidDuration(updatedSched.slidesTotalDuration);
-                            }
-                            cardData.isDirty = true;
-                            renderTimeline(false);
-                            const newSeg = updatedSched.allSlides[sIdx];
-                            if (newSeg && !newSeg.muted) {
-                                seekAeCompToTime(newSeg.start + Math.min(0.2, newSeg.duration * 0.25), true);
-                            }
-                            pushAeHistorySnapshot();
-                            queueSave();
-                        });
-
-                        // Sağ Satır: Ardışık Görsel Klip Çubuğu + Sürüklenebilir Sağ Süre Tutamacı (↔)
-                        const rightSlideTrack = document.createElement('div');
-                        rightSlideTrack.className = 'h-11 border-b border-zinc-800/60 relative bg-[#10121b] flex items-center';
-                        for (let i = 0; i <= vidDuration; i++) {
-                            const grid = document.createElement('div');
-                            grid.className = 'absolute top-0 bottom-0 border-l border-zinc-800/35 pointer-events-none';
-                            grid.style.left = (i * pxPerSec) + 'px';
-                            rightSlideTrack.appendChild(grid);
-                        }
-
-                        if (!slideSeg.muted) {
-                            const clipLeftPx = slideSeg.start * pxPerSec;
-                            const clipWidthPx = Math.max(22, slideSeg.duration * pxPerSec);
-                            const slideBar = document.createElement('div');
-                            slideBar.className = 'ae-bg-slide-clip absolute top-1.5 bottom-1.5 rounded-md border flex items-center justify-between px-2 select-none overflow-hidden cursor-pointer group';
-                            slideBar.style.left = `${clipLeftPx}px`;
-                            slideBar.style.width = `${clipWidthPx}px`;
-                            slideBar.style.background = `linear-gradient(90deg, ${sColor}75 0%, ${sColor}35 100%)`;
-                            slideBar.style.borderColor = `${sColor}bb`;
-                            slideBar.innerHTML = `
-                                <div class="flex items-center gap-1.5 min-w-0 pointer-events-none z-10">
-                                    ${mediaItem.thumbSrc ? `<img src="${mediaItem.thumbSrc}" class="w-5 h-5 rounded object-cover border border-white/25 shrink-0" alt="">` : ''}
-                                    <span class="text-[8.5px] font-black text-white drop-shadow truncate">${slideLabel} • ${slideSeg.duration.toFixed(2)}s</span>
-                                </div>
-                                <span class="text-[8px] font-mono text-white/80 pointer-events-none z-10 pr-2 truncate hidden sm:inline">${slideSeg.start.toFixed(1)}s→${slideSeg.end.toFixed(1)}s</span>
-                                <div class="ae-bg-trim-handle absolute right-0 top-0 bottom-0 w-3 bg-white/30 hover:bg-amber-400 cursor-ew-resize rounded-r-md flex items-center justify-center z-20 transition-colors" title="Sürükleyerek ${slideLabel} süresini uzat / kısalt (${slideSeg.duration.toFixed(2)}s)">
-                                    <span class="w-0.5 h-3.5 bg-white rounded"></span>
-                                </div>
-                            `;
-
-                            slideBar.addEventListener('mousedown', (ev) => {
-                                const isTrimHandle = Boolean(ev.target.closest('.ae-bg-trim-handle'));
-                                if (!isTrimHandle) {
-                                    jumpToThisSlide();
-                                    return;
-                                }
-                                ev.preventDefault();
-                                ev.stopPropagation();
-                                if (aeIsPlaying && typeof aeStopActivePlayback === 'function') aeStopActivePlayback(false);
-
-                                const bgTl = ensureExplicitSlideDurationsLocked();
-                                const startX = ev.clientX;
-                                const initSlideDur = slideSeg.duration;
-
-                                const onTrimMove = (me) => {
-                                    const dt = (me.clientX - startX) / pxPerSec;
-                                    const nextDur = parseFloat(Math.max(0.3, Math.min(120, initSlideDur + dt)).toFixed(2));
-                                    bgTl.slides[sIdx].duration = nextDur;
-                                    const liveSched = computeCurrentBgSchedule();
-                                    if (bgTl.syncVideoDuration || liveSched.slidesTotalDuration > vidDuration + 0.05) {
-                                        setTimelineVidDuration(liveSched.slidesTotalDuration);
-                                    }
-                                    const curSeg = liveSched.allSlides[sIdx];
-                                    if (curSeg) {
-                                        seekAeCompToTime(Math.max(curSeg.start, curSeg.end - 0.1), false);
-                                    }
-                                    renderTimeline(false);
-                                };
-
-                                const onTrimUp = () => {
-                                    window.removeEventListener('mousemove', onTrimMove);
-                                    window.removeEventListener('mouseup', onTrimUp);
-                                    cardData.isDirty = true;
-                                    pushAeHistorySnapshot();
-                                    queueSave();
-                                };
-                                window.addEventListener('mousemove', onTrimMove);
-                                window.addEventListener('mouseup', onTrimUp);
-                            });
-
-                            rightSlideTrack.appendChild(slideBar);
-                        }
-                        timelineTracksContainer.appendChild(rightSlideTrack);
-                    });
+                    timelineTracksContainer.appendChild(masterTrack);
 
                     if (root.selectedAudioFile) {
                         const audioHeader = document.createElement('div');
@@ -14685,92 +13854,7 @@
                     updateAeQuickInspectorBar();
                 }
 
-                // AE TIMELINE CANLI UNDO / REDO GEÇMİŞ MOTORU (Ctrl/Cmd+Z & Ctrl+Y / Cmd+Shift+Z)
-                const aeHistory = [];
-                let aeHistoryIndex = -1;
-                let aeHistTimer = null;
-
-                const captureAeSnapshot = () => JSON.stringify({
-                    vidDuration,
-                    bgSlideTimeline: cardData.groups.__bgSlideTimeline__ || {},
-                    tracks: currentTracks.map(t => ({
-                        layerId: t.layerId,
-                        cleanName: t.cleanName,
-                        groupKey: t.groupKey,
-                        animationType: t.animationType,
-                        animDelay: t.animDelay,
-                        animDuration: t.animDuration,
-                        outType: t.outType,
-                        outTime: t.outTime,
-                        outDuration: t.outDuration,
-                        easingCurve: t.easingCurve,
-                        muted: t.muted,
-                        solo: t.solo,
-                        enableShine: t.enableShine
-                    }))
-                });
-
-                const applyAeSnapshot = (snapJson) => {
-                    if (!snapJson) return;
-                    const snap = JSON.parse(snapJson);
-                    if (snap.vidDuration) setTimelineVidDuration(snap.vidDuration);
-                    cardData.groups.__bgSlideTimeline__ = JSON.parse(JSON.stringify(snap.bgSlideTimeline || { slides: {} }));
-                    if (Array.isArray(snap.tracks)) {
-                        snap.tracks.forEach(savedTr => {
-                            const match = currentTracks.find(ct => (ct.layerId && ct.layerId === savedTr.layerId) || ct.cleanName === savedTr.cleanName);
-                            if (match) {
-                                Object.assign(match, savedTr);
-                                syncTrackRecordToCard(cardData, match);
-                            }
-                        });
-                    }
-                    renderTimeline(false);
-                    seekAeCompToTime(Math.min(aeCurrentTime, vidDuration), false);
-                    queueSave();
-                };
-
-                function pushAeHistorySnapshot(immediate = false) {
-                    const commit = () => {
-                        const snap = captureAeSnapshot();
-                        if (aeHistoryIndex >= 0 && aeHistory[aeHistoryIndex] === snap) return;
-                        aeHistory.splice(aeHistoryIndex + 1);
-                        aeHistory.push(snap);
-                        if (aeHistory.length > 40) aeHistory.shift();
-                        aeHistoryIndex = aeHistory.length - 1;
-                    };
-                    clearTimeout(aeHistTimer);
-                    if (immediate) commit();
-                    else aeHistTimer = setTimeout(commit, 180);
-                }
-
-                window.__activeTimelineSession = {
-                    undo() {
-                        clearTimeout(aeHistTimer);
-                        const cur = captureAeSnapshot();
-                        if (aeHistoryIndex >= 0 && aeHistory[aeHistoryIndex] !== cur) pushAeHistorySnapshot(true);
-                        if (aeHistoryIndex > 0) {
-                            aeHistoryIndex--;
-                            applyAeSnapshot(aeHistory[aeHistoryIndex]);
-                            window.showToast && window.showToast('🎬 Timeline: Geri Alındı (Undo)', 'info');
-                        } else {
-                            window.showToast && window.showToast('Timeline içinde geri alınacak başka adım yok', 'warning');
-                        }
-                    },
-                    redo() {
-                        if (aeHistoryIndex < aeHistory.length - 1) {
-                            aeHistoryIndex++;
-                            applyAeSnapshot(aeHistory[aeHistoryIndex]);
-                            window.showToast && window.showToast('🎬 Timeline: İleri Alındı (Redo)', 'info');
-                        } else {
-                            window.showToast && window.showToast('Timeline içinde ileri alınacak başka adım yok', 'warning');
-                        }
-                    }
-                };
-
                 renderTimeline(true);
-                pushAeHistorySnapshot(true);
-                timelineModal.onmouseup = () => pushAeHistorySnapshot(false);
-                timelineModal.onchange = () => pushAeHistorySnapshot(false);
 
                 timelineZoomSlider.oninput = (e) => {
                     pxPerSec = parseInt(e.target.value) || 55;
@@ -15088,9 +14172,6 @@
                         currentTracks.forEach(tr => syncTrackRecordToCard(cardData, tr));
                         window.frameAnimations = window.frameAnimations || {};
                         window.frameAnimations[cardData.frameName] = JSON.parse(JSON.stringify(cardData.groups.__layerAnimations__ || {}));
-                        if (root.allFrameGroups && root.allFrameGroups[cardData.frameName]) {
-                            copyAnimationsBetweenCards(cardData, { groups: root.allFrameGroups[cardData.frameName] });
-                        }
                         let count = 0;
                         generatedPreviewItems.forEach(targetCard => {
                             if (targetCard.frameName === cardData.frameName) {
@@ -15100,7 +14181,7 @@
                             }
                         });
                         queueSave();
-                        window.showToast(`Animasyon ve görsel süre kurgusu '${cardData.frameName}' ölçüsündeki ${count > 0 ? count + ' çalışmaya ve şablona' : 'şablona'} uygulandı!`, "success");
+                        window.showToast(`Animasyon kurgusu '${cardData.frameName}' ölçüsündeki ${count > 0 ? count + ' çalışmaya ve şablona' : 'şablona'} uygulandı!`, "success");
                     };
                 }
 
@@ -15111,9 +14192,6 @@
                         window.frameAnimations = window.frameAnimations || {};
                         frameWrappers.forEach(fw => {
                             window.frameAnimations[fw.name] = JSON.parse(JSON.stringify(cardData.groups.__layerAnimations__ || {}));
-                            if (root.allFrameGroups && root.allFrameGroups[fw.name]) {
-                                copyAnimationsBetweenCards(cardData, { groups: root.allFrameGroups[fw.name] });
-                            }
                         });
                         copyAnimationsBetweenCards(cardData, { groups: groupedInputs });
                         let count = 0;
@@ -15125,7 +14203,7 @@
                         if (selectedPreviewCards.length > 0) updateEditorPanelBasedOnSelection();
                         else renderEditorPanelLocal(groupedInputs, root.querySelector('.left-panel-title').innerText);
                         queueSave();
-                        window.showToast(`Animasyon ve görsel süre kurgusu tüm çalışmalara (${count > 0 ? count + ' kart' : 'tüm ölçüler'}) eksiksiz uygulandı!`, "success");
+                        window.showToast(`Animasyon kurgusu tüm çalışmalara (${count > 0 ? count + ' kart' : 'tüm ölçüler'}) eksiksiz uygulandı!`, "success");
                     };
                 }
             }
@@ -16804,8 +15882,6 @@
                 // Animasyon Stüdyosuna Geç, Aynı Ölçülere Uygula, Tümüne Uygula, Kaydetmeden Çık & Sadece Bu Çalışmaya Kaydet Butonları
                 if (mfOpenAeBtn) {
                     mfOpenAeBtn.onclick = () => {
-                        if (window.__activeMiniFigmaSession && window.__activeMiniFigmaSession.disconnect) window.__activeMiniFigmaSession.disconnect();
-                        window.__activeMiniFigmaSession = null;
                         miniFigmaModal.classList.add('hidden');
                         miniFigmaModal.classList.remove('flex');
                         queueSave();
@@ -16918,8 +15994,6 @@
                 }
                 if (mfCancelBtn) {
                     mfCancelBtn.onclick = () => {
-                        if (window.__activeMiniFigmaSession && window.__activeMiniFigmaSession.disconnect) window.__activeMiniFigmaSession.disconnect();
-                        window.__activeMiniFigmaSession = null;
                         restoreInitialCardSnapshot();
                         miniFigmaModal.classList.add('hidden');
                         miniFigmaModal.classList.remove('flex');
@@ -16930,8 +16004,6 @@
                 }
                 if (mfCloseBtn) {
                     mfCloseBtn.onclick = () => {
-                        if (window.__activeMiniFigmaSession && window.__activeMiniFigmaSession.disconnect) window.__activeMiniFigmaSession.disconnect();
-                        window.__activeMiniFigmaSession = null;
                         cardData.isDirty = true;
                         cardData.groups.__customAddedNodes__ = extractCustomAddedHtmlRecords(cardWr);
                         miniFigmaModal.classList.add('hidden');
@@ -16955,152 +16027,6 @@
                 if (startTarget) {
                     selectMfNode(startTarget, true);
                 }
-
-                // MINI FIGMA (❖ TASARLA) CANLI UNDO / REDO & KLAVYE KISAYOL OTURUMU
-                if (window.__activeMiniFigmaSession && window.__activeMiniFigmaSession.disconnect) {
-                    window.__activeMiniFigmaSession.disconnect();
-                }
-                let isMfRestoring = false;
-                let isMfPointerDown = false;
-                let mfHistTimer = null;
-                const mfHistory = [];
-                let mfHistoryIdx = -1;
-
-                const captureMfSnapshot = () => ({
-                    cardHtml: cardWr.innerHTML,
-                    transforms: JSON.parse(JSON.stringify(cardData.groups.__customNodeTransforms__ || {})),
-                    styles: JSON.parse(JSON.stringify(cardData.groups.__customNodeStyles__ || {})),
-                    selectedRef: mfSelectedNode && mfSelectedNode.dataset ? (mfSelectedNode.dataset.editRef || null) : null
-                });
-
-                const commitMfSnapshot = () => {
-                    if (isMfRestoring) return;
-                    const snap = captureMfSnapshot();
-                    if (mfHistoryIdx >= 0 && mfHistory[mfHistoryIdx] && mfHistory[mfHistoryIdx].cardHtml === snap.cardHtml) return;
-                    mfHistory.splice(mfHistoryIdx + 1);
-                    mfHistory.push(snap);
-                    if (mfHistory.length > 35) mfHistory.shift();
-                    mfHistoryIdx = mfHistory.length - 1;
-                };
-
-                const applyMfSnapshot = (snap) => {
-                    if (!snap) return;
-                    isMfRestoring = true;
-                    try {
-                        cardWr.innerHTML = snap.cardHtml;
-                        cardData.groups.__customNodeTransforms__ = JSON.parse(JSON.stringify(snap.transforms || {}));
-                        cardData.groups.__customNodeStyles__ = JSON.parse(JSON.stringify(snap.styles || {}));
-                        cardData.groups.__customAddedNodes__ = extractCustomAddedHtmlRecords(cardWr);
-                        if (window.finalizeFigmaGroupsInWrapper) {
-                            window.finalizeFigmaGroupsInWrapper(cardWr, cardData.groups);
-                        }
-                        stageClone.innerHTML = cardWr.innerHTML;
-                        stageClone.querySelectorAll('.figma-canvas-selection-overlay, .preview-overlay-canvas').forEach(el => el.remove());
-                        stageClone.querySelectorAll('*').forEach(n => { n.style.transition = 'none'; });
-                        if (window.finalizeFigmaGroupsInWrapper) {
-                            window.finalizeFigmaGroupsInWrapper(stageClone, cardData.groups);
-                        }
-                        renderMfLayersTree();
-                        const nextSel = snap.selectedRef
-                            ? stageClone.querySelector(`[data-edit-ref="${CSS.escape(snap.selectedRef)}"]`)
-                            : null;
-                        selectMfNode(nextSel, false);
-                        queueSave();
-                    } finally {
-                        setTimeout(() => { isMfRestoring = false; }, 30);
-                    }
-                };
-
-                commitMfSnapshot();
-
-                const mfDownHandler = () => { isMfPointerDown = true; };
-                const mfUpHandler = () => {
-                    if (isMfPointerDown) {
-                        isMfPointerDown = false;
-                        clearTimeout(mfHistTimer);
-                        mfHistTimer = setTimeout(commitMfSnapshot, 80);
-                    }
-                };
-                miniFigmaModal.addEventListener('mousedown', mfDownHandler);
-                window.addEventListener('mouseup', mfUpHandler);
-
-                const mfObserver = new MutationObserver(() => {
-                    if (isMfRestoring || isMfPointerDown) return;
-                    clearTimeout(mfHistTimer);
-                    mfHistTimer = setTimeout(commitMfSnapshot, 240);
-                });
-                mfObserver.observe(cardWr, { attributes: true, childList: true, characterData: true, subtree: true });
-
-                window.__activeMiniFigmaSession = {
-                    disconnect() {
-                        clearTimeout(mfHistTimer);
-                        mfObserver.disconnect();
-                        miniFigmaModal.removeEventListener('mousedown', mfDownHandler);
-                        window.removeEventListener('mouseup', mfUpHandler);
-                    },
-                    undo() {
-                        clearTimeout(mfHistTimer);
-                        commitMfSnapshot();
-                        if (mfHistoryIdx > 0) {
-                            mfHistoryIdx--;
-                            applyMfSnapshot(mfHistory[mfHistoryIdx]);
-                            window.showToast && window.showToast('❖ Tasarla: Geri Alındı (Undo)', 'info');
-                        } else {
-                            window.showToast && window.showToast('Tasarla modunda geri alınacak başka işlem yok', 'warning');
-                        }
-                    },
-                    redo() {
-                        if (mfHistoryIdx < mfHistory.length - 1) {
-                            mfHistoryIdx++;
-                            applyMfSnapshot(mfHistory[mfHistoryIdx]);
-                            window.showToast && window.showToast('❖ Tasarla: İleri Alındı (Redo)', 'info');
-                        } else {
-                            window.showToast && window.showToast('Tasarla modunda ileri alınacak başka işlem yok', 'warning');
-                        }
-                    },
-                    duplicateSelected() {
-                        if (mfDupLayerBtn && mfSelectedNode) mfDupLayerBtn.click();
-                    },
-                    deleteSelected() {
-                        if (mfDelLayerBtn && mfSelectedNode) mfDelLayerBtn.click();
-                    },
-                    nudgeSelected(arrowKey, stepPx = 1) {
-                        if (!mfSelectedNode) return false;
-                        const members = (!mfDrillDown && window.getLinkedGroupMembers)
-                            ? window.getLinkedGroupMembers(mfSelectedNode, stageClone)
-                            : [mfSelectedNode];
-                        members.forEach(m => {
-                            const pos = prepareNodeForSmoothFigmaMove(m, stageClone);
-                            const orig = getOrigNodeInCard(m);
-                            if (orig) prepareNodeForSmoothFigmaMove(orig, cardWr);
-                            let nL = pos.startX;
-                            let nT = pos.startY;
-                            if (arrowKey === 'ArrowLeft') nL -= stepPx;
-                            if (arrowKey === 'ArrowRight') nL += stepPx;
-                            if (arrowKey === 'ArrowUp') nT -= stepPx;
-                            if (arrowKey === 'ArrowDown') nT += stepPx;
-                            m.style.left = `${Math.round(nL)}px`;
-                            m.style.top = `${Math.round(nT)}px`;
-                            if (orig) {
-                                orig.style.left = m.style.left;
-                                orig.style.top = m.style.top;
-                                saveMiniFigmaStyleToGroups(orig, cardData.groups);
-                            }
-                        });
-                        syncMfInspectorFromNode();
-                        clearTimeout(mfHistTimer);
-                        mfHistTimer = setTimeout(commitMfSnapshot, 180);
-                        queueSave();
-                        return true;
-                    },
-                    handleEscape() {
-                        if (mfSelectedNode) {
-                            selectMfNode(null, false);
-                        } else if (mfCloseBtn) {
-                            mfCloseBtn.click();
-                        }
-                    }
-                };
             }
 
             if (openMiniFigmaMainBtn) {
@@ -17165,7 +16091,7 @@
                     const fileIdMatch = fileIdInput.value.match(/\[(.*?)\]/);
                     const fileId = fileIdMatch ? fileIdMatch[1].trim() : fileIdInput.value.trim();
                     let presets = JSON.parse(localStorage.getItem(`etstur_presets_${fileId}`) || '{}');
-                    if(presets[name]) { root.applyWorkspaceState(presets[name]); queueSave(); window.showToast("Preset yüklendi.", "success"); }
+                    if(presets[name]) { root.applyWorkspaceState(presets[name]); window.showToast("Preset yüklendi.", "success"); }
                 }
             });
 
@@ -17177,19 +16103,10 @@
                         const fileIdMatch = fileIdInput.value.match(/\[(.*?)\]/); const fileId = fileIdMatch ? fileIdMatch[1].trim() : fileIdInput.value.trim();
                         let presets = JSON.parse(localStorage.getItem(`etstur_presets_${fileId}`) || '{}');
                         delete presets[name]; localStorage.setItem(`etstur_presets_${fileId}`, JSON.stringify(presets));
-                        if (window.TeamCloudSync && typeof window.TeamCloudSync.deleteRemotePreset === 'function') {
-                            window.TeamCloudSync.deleteRemotePreset(`etstur_presets_${fileId}`, name);
-                        }
                         updatePresetDropdown(); presetSelect.value = ''; presetDeleteBtn.classList.add('hidden'); window.showToast("Preset silindi.", "success");
                     }
                 }
             });
-
-            root.refreshSharedDropdowns = () => {
-                savedFileIds = JSON.parse(localStorage.getItem('figma_file_ids') || '[]');
-                updateFileIdDropdown();
-                updatePresetDropdown();
-            };
 
             root.addEventListener('dragover', e => {
                 if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
@@ -17259,10 +16176,6 @@
                     }
                     if (key === '__customAddedNodes__') {
                         state.__customAddedNodes__ = JSON.parse(JSON.stringify(groupsObj.__customAddedNodes__ || []));
-                        continue;
-                    }
-                    if (key === '__bgSlideTimeline__') {
-                        state.__bgSlideTimeline__ = JSON.parse(JSON.stringify(groupsObj.__bgSlideTimeline__ || {}));
                         continue;
                     }
                     if (key.startsWith('__')) continue;
@@ -17387,78 +16300,35 @@
                 if (!savedState || !targetGroupsObj) return;
                 if (savedState.__layerAnimations__) {
                     targetGroupsObj.__layerAnimations__ = JSON.parse(JSON.stringify(savedState.__layerAnimations__));
-                } else {
-                    targetGroupsObj.__layerAnimations__ = {};
                 }
                 if (savedState.__customNodeTransforms__) {
                     targetGroupsObj.__customNodeTransforms__ = JSON.parse(JSON.stringify(savedState.__customNodeTransforms__));
-                } else {
-                    targetGroupsObj.__customNodeTransforms__ = {};
                 }
                 if (savedState.__customNodeStyles__) {
                     targetGroupsObj.__customNodeStyles__ = JSON.parse(JSON.stringify(savedState.__customNodeStyles__));
-                } else {
-                    targetGroupsObj.__customNodeStyles__ = {};
-                }
-                if (savedState.__customAddedNodes__) {
-                    targetGroupsObj.__customAddedNodes__ = JSON.parse(JSON.stringify(savedState.__customAddedNodes__));
-                } else {
-                    targetGroupsObj.__customAddedNodes__ = [];
-                }
-                if (savedState.__bgSlideTimeline__) {
-                    targetGroupsObj.__bgSlideTimeline__ = JSON.parse(JSON.stringify(savedState.__bgSlideTimeline__));
-                } else {
-                    delete targetGroupsObj.__bgSlideTimeline__;
                 }
                 const matchedFw = frameWrappers.find(fw => root.allFrameGroups && root.allFrameGroups[fw.name] === targetGroupsObj) || null;
-                const domWrapper = (wrapperScope && wrapperScope.classList && wrapperScope.classList.contains('preview-wrapper'))
-                    ? wrapperScope
-                    : (matchedFw ? matchedFw.element : null);
-                const frameNameForDom = (domWrapper && domWrapper.dataset && domWrapper.dataset.frameName) || (matchedFw ? matchedFw.name : '');
-
-                if (domWrapper) {
+                if (matchedFw && matchedFw.element) {
                     for (const existingKey of Object.keys(targetGroupsObj)) {
-                        if (existingKey.startsWith('__')) continue;
-                        if ((targetGroupsObj[existingKey] && (targetGroupsObj[existingKey].isClonedField || targetGroupsObj[existingKey].isCustomAdded)) && !savedState[existingKey]) {
+                        if (existingKey === '__layerAnimations__' || existingKey === '__customNodeTransforms__' || existingKey === '__customNodeStyles__') continue;
+                        if (targetGroupsObj[existingKey] && targetGroupsObj[existingKey].isClonedField && !savedState[existingKey]) {
                             (targetGroupsObj[existingKey].elements || []).forEach(elItem => {
-                                const dNode = elItem.dom || elItem.domNode;
-                                const unit = elItem.unitDom || (dNode ? getClonableUnitNode(dNode, domWrapper) : null);
+                                const unit = elItem.unitDom || getClonableUnitNode(elItem.dom, matchedFw.element);
                                 if (unit && unit.parentElement) unit.remove();
-                                else if (dNode && dNode.parentElement) dNode.remove();
                             });
                             delete targetGroupsObj[existingKey];
                         }
                     }
                     for (const k in savedState) {
-                        if (k.startsWith('__')) continue;
+                        if (k === '__layerAnimations__' || k === '__customNodeTransforms__' || k === '__customNodeStyles__') continue;
                         const s = savedState[k];
                         if (s && s.isClonedField && s.sourceGroupKey && !targetGroupsObj[k]) {
-                            ensureClonedFieldInGroupMap(domWrapper, frameNameForDom, targetGroupsObj, k, s.sourceGroupKey, s);
+                            ensureClonedFieldInGroupMap(matchedFw.element, matchedFw.name, targetGroupsObj, k, s.sourceGroupKey, s);
                         }
                     }
-                    // Özel eklenen ([data-custom-added="true"]) DOM düğümlerini geri al / ileri al ile senkronize et
-                    const savedCustomList = Array.isArray(targetGroupsObj.__customAddedNodes__) ? targetGroupsObj.__customAddedNodes__ : [];
-                    const savedCustomRefs = new Set(savedCustomList.map(x => x && x.editRef).filter(Boolean));
-                    domWrapper.querySelectorAll('[data-custom-added="true"]').forEach(existingCustom => {
-                        const cRef = existingCustom.dataset ? existingCustom.dataset.editRef : '';
-                        if (cRef && !savedCustomRefs.has(cRef) && !Object.values(savedState).some(v => v && Array.isArray(v.elements) && v.elements.some(e => e.editRef === cRef))) {
-                            existingCustom.remove();
-                        }
-                    });
-                    const dstRoot = (window.getRootFigmaDiv ? window.getRootFigmaDiv(domWrapper) : domWrapper.children[0]) || domWrapper;
-                    savedCustomList.forEach(rec => {
-                        if (!rec || !rec.editRef || !rec.outerHTML) return;
-                        let curEl = domWrapper.querySelector(`[data-edit-ref="${CSS.escape(rec.editRef)}"]`);
-                        const tmp = document.createElement('div');
-                        tmp.innerHTML = rec.outerHTML.trim();
-                        const parsed = tmp.firstElementChild;
-                        if (!parsed) return;
-                        if (curEl) curEl.replaceWith(parsed);
-                        else dstRoot.appendChild(parsed);
-                    });
                 }
                 for (let k in savedState) {
-                    if (k.startsWith('__')) continue;
+                    if (k === '__layerAnimations__' || k === '__customNodeTransforms__' || k === '__customNodeStyles__') continue;
                     if (targetGroupsObj[k]) {
                         const saved = savedState[k];
                         const g = targetGroupsObj[k];
@@ -17576,17 +16446,17 @@
                         applySavedElementDomList(saved.redElements, g.redElements);
                     }
                 }
-                if (domWrapper) {
+                if (matchedFw && matchedFw.element) {
                     if (targetGroupsObj.__customNodeTransforms__) {
                         for (const [mRef, tfObj] of Object.entries(targetGroupsObj.__customNodeTransforms__)) {
-                            const nodeEl = domWrapper.querySelector(`[data-edit-ref="${CSS.escape(mRef)}"]`);
+                            const nodeEl = matchedFw.element.querySelector(`[data-edit-ref="${CSS.escape(mRef)}"]`);
                             if (nodeEl && tfObj) {
                                 if (tfObj.position) nodeEl.style.position = tfObj.position;
                                 if (tfObj.left) nodeEl.style.left = tfObj.left;
                                 if (tfObj.top) nodeEl.style.top = tfObj.top;
                                 if (tfObj.width) nodeEl.style.width = tfObj.width;
                                 if (tfObj.height) nodeEl.style.height = tfObj.height;
-                                if (tfObj.transform !== undefined) nodeEl.style.transform = tfObj.transform;
+                                if (tfObj.transform) nodeEl.style.transform = tfObj.transform;
                                 if (tfObj.zIndex) nodeEl.style.zIndex = tfObj.zIndex;
                                 if (tfObj.isUngrouped) nodeEl.dataset.figmaUngrouped = tfObj.isUngrouped;
                             }
@@ -17594,7 +16464,7 @@
                     }
                     if (targetGroupsObj.__customNodeStyles__) {
                         for (const [mRef, stObj] of Object.entries(targetGroupsObj.__customNodeStyles__)) {
-                            const nodeEl = domWrapper.querySelector(`[data-edit-ref="${CSS.escape(mRef)}"]`);
+                            const nodeEl = matchedFw.element.querySelector(`[data-edit-ref="${CSS.escape(mRef)}"]`);
                             if (nodeEl && stObj) {
                                 ['background', 'backgroundColor', 'backgroundImage', 'color', 'webkitTextFillColor', 'fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'textDecoration', 'textTransform', 'textAlign', 'borderRadius', 'padding', 'border', 'opacity', 'boxShadow', 'textShadow', 'filter', 'display'].forEach(prop => {
                                     if (stObj[prop] !== undefined && stObj[prop] !== '') nodeEl.style[prop] = stObj[prop];
@@ -17603,47 +16473,8 @@
                             }
                         }
                     }
-                    upgradePipeValuesToClonedFields(domWrapper, frameNameForDom, targetGroupsObj);
+                    upgradePipeValuesToClonedFields(matchedFw.element, matchedFw.name, targetGroupsObj);
                 }
-            }
-
-            function resetBatchCardFromTemplateRow(item) {
-                if (!item || !root.allFrameGroups) return;
-                const baseFrameGroups = root.allFrameGroups[item.frameName] || groupedInputs || {};
-                const row = item.rowData || ((typeof item.rowIndex === 'number' && item.rowIndex >= 0 && activeCsvData[item.rowIndex]) ? activeCsvData[item.rowIndex] : {});
-                const rebuilt = {};
-                for (const key in baseFrameGroups) {
-                    if (key.startsWith('__')) {
-                        rebuilt[key] = JSON.parse(JSON.stringify(baseFrameGroups[key]));
-                        continue;
-                    }
-                    const gTpl = baseFrameGroups[key];
-                    if (!gTpl) continue;
-                    const mappedCol = csvColumnMapping[key] || key;
-                    let val = gTpl.value;
-                    if (row && row[mappedCol] !== undefined) {
-                        if (gTpl.type === 'IMAGE') val = row[mappedCol];
-                        else if (gTpl.type === 'VISIBLE') val = (row[mappedCol] && String(row[mappedCol]).trim().toLowerCase() === 'yok') ? 'Yok' : 'Var';
-                        else if (gTpl.type === 'LOGO_PAIR') val = (row[mappedCol] && String(row[mappedCol]).trim().toLowerCase() === 'kirmizi') ? 'kirmizi' : 'beyaz';
-                        else if (gTpl.type === 'TEXT') {
-                            const valLower = String(row[mappedCol]).trim().toLowerCase();
-                            if (valLower !== 'var' && valLower !== 'yok') val = row[mappedCol];
-                        } else val = row[mappedCol];
-                    }
-                    if (gTpl.type === 'IMAGE' && item.overrideValue !== undefined && item.overrideValue !== null && String(item.overrideValue).trim() !== '') {
-                        val = item.overrideValue;
-                    }
-                    const prevG = item.groups && item.groups[key];
-                    rebuilt[key] = {
-                        ...gTpl,
-                        value: val,
-                        elements: prevG ? (prevG.elements || []) : [],
-                        whiteElements: prevG ? (prevG.whiteElements || []) : [],
-                        redElements: prevG ? (prevG.redElements || []) : []
-                    };
-                }
-                item.groups = rebuilt;
-                item.isDirty = false;
             }
 
             root.getWorkspaceState = () => {
@@ -17654,46 +16485,12 @@
                     }
                 }
                 const activeState = serializeGroupsObject(groupedInputs);
-                const isBatchMode = Array.isArray(generatedPreviewItems) && generatedPreviewItems.length > 0;
-                let batchCardSnapshots = null;
-                let batchDirtyIds = null;
-                let selectedCardIds = null;
-
-                if (isBatchMode) {
-                    batchCardSnapshots = {};
-                    batchDirtyIds = [];
-                    selectedCardIds = (selectedPreviewCards || []).map(c => c && c.id).filter(Boolean);
-                    const selSet = new Set(selectedCardIds);
-                    let snapCount = 0;
-
-                    for (let i = 0; i < generatedPreviewItems.length; i++) {
-                        const it = generatedPreviewItems[i];
-                        if (!it) continue;
-                        if (it.isDirty) batchDirtyIds.push(it.id);
-                        const shouldSnap = selSet.has(it.id) || (it.isDirty && snapCount < 72) || (it.isMounted && snapCount < 56);
-                        if (shouldSnap) {
-                            if (it.isMounted && typeof syncMountedCardToGroups === 'function') {
-                                try { syncMountedCardToGroups(it); } catch (e) {}
-                            }
-                            batchCardSnapshots[it.id] = serializeGroupsObject(it.groups);
-                            snapCount++;
-                        }
-                    }
-                }
-
                 return {
                     __multiFrameWorkspace__: true,
                     selectedTemplateFrameName: root.selectedTemplateFrameName || null,
-                    videoDuration: videoDurationInput ? videoDurationInput.value : '15',
-                    atmosphere: atmosphereSelect ? atmosphereSelect.value : 'none',
-                    theme: themeSelect ? themeSelect.value : 'default',
                     activeGroups: activeState,
                     allFrameGroups: allFramesSerialized,
-                    frameAnimations: window.frameAnimations ? JSON.parse(JSON.stringify(window.frameAnimations)) : null,
-                    isBatchMode,
-                    selectedCardIds,
-                    batchDirtyIds,
-                    batchCardSnapshots
+                    frameAnimations: window.frameAnimations ? JSON.parse(JSON.stringify(window.frameAnimations)) : null
                 };
             };
 
@@ -17702,20 +16499,11 @@
                 if (state.frameAnimations) {
                     window.frameAnimations = JSON.parse(JSON.stringify(state.frameAnimations));
                 }
-                if (state.videoDuration && videoDurationInput) {
-                    videoDurationInput.value = state.videoDuration;
-                }
-                if (state.atmosphere !== undefined && atmosphereSelect && atmosphereSelect.value !== state.atmosphere) {
-                    atmosphereSelect.value = state.atmosphere;
-                    const cssFilter = window.getAtmosphereCssFilter ? window.getAtmosphereCssFilter(state.atmosphere) : 'none';
-                    root.querySelectorAll('.preview-wrapper').forEach(w => { w.style.filter = cssFilter; });
-                }
                 if (state.__multiFrameWorkspace__) {
                     if (state.allFrameGroups && root.allFrameGroups) {
                         for (const fName in state.allFrameGroups) {
                             if (root.allFrameGroups[fName]) {
-                                const fwMatch = frameWrappers.find(f => f.name === fName);
-                                applyStateToGroupsObject(state.allFrameGroups[fName], root.allFrameGroups[fName], fwMatch ? fwMatch.element : root);
+                                applyStateToGroupsObject(state.allFrameGroups[fName], root.allFrameGroups[fName], root);
                             }
                         }
                     }
@@ -17725,8 +16513,7 @@
                         groupedInputs = root.allFrameGroups[targetFrameName];
                     }
                     if (state.activeGroups && groupedInputs && Object.keys(groupedInputs).length > 0) {
-                        const activeFw = frameWrappers.find(f => f.name === root.selectedTemplateFrameName);
-                        applyStateToGroupsObject(state.activeGroups, groupedInputs, activeFw ? activeFw.element : root);
+                        applyStateToGroupsObject(state.activeGroups, groupedInputs, root);
                     }
                 } else {
                     if (root.allFrameGroups) {
@@ -17736,69 +16523,11 @@
                     }
                     applyStateToGroupsObject(state, groupedInputs, root);
                 }
-
-                // TOPLU ÖNİZLEME (2400+ SANAL KART SAHNESİ) GERİ AL / İLERİ AL SENKRONİZASYONU
-                if (Array.isArray(generatedPreviewItems) && generatedPreviewItems.length > 0 && state.isBatchMode) {
-                    const dirtySet = new Set(Array.isArray(state.batchDirtyIds) ? state.batchDirtyIds : []);
-                    const snapMap = state.batchCardSnapshots || {};
-                    const mountedToRefreshMedia = [];
-
-                    for (let i = 0; i < generatedPreviewItems.length; i++) {
-                        const item = generatedPreviewItems[i];
-                        if (!item) continue;
-                        const wasDirtyInState = dirtySet.has(item.id);
-                        if (snapMap[item.id]) {
-                            item.isDirty = wasDirtyInState;
-                            if (item.isMounted && item.wrapper) {
-                                applyStateToGroupsObject(snapMap[item.id], item.groups, item.wrapper);
-                                mountedToRefreshMedia.push(item);
-                            } else {
-                                applyStateToGroupsObject(snapMap[item.id], item.groups, null);
-                            }
-                        } else if (!wasDirtyInState && item.isDirty) {
-                            resetBatchCardFromTemplateRow(item);
-                            if (item.isMounted && item.wrapper) {
-                                const fwObj = frameWrappers.find(f => f.name === item.frameName);
-                                if (fwObj && fwObj.element && typeof unmountVirtualBatchCard === 'function') {
-                                    unmountVirtualBatchCard(item);
-                                }
-                            }
-                        } else if (wasDirtyInState && !snapMap[item.id] && root.allFrameGroups && root.allFrameGroups[item.frameName]) {
-                            // Toplu "Tümüne Uygula" işlemi ileri alındığında (Redo) şablon stil/animasyonlarını karta yansıt
-                            const tplG = root.allFrameGroups[item.frameName];
-                            if (tplG.__layerAnimations__) item.groups.__layerAnimations__ = JSON.parse(JSON.stringify(tplG.__layerAnimations__));
-                            if (tplG.__bgSlideTimeline__) item.groups.__bgSlideTimeline__ = JSON.parse(JSON.stringify(tplG.__bgSlideTimeline__));
-                            if (tplG.__customNodeStyles__) item.groups.__customNodeStyles__ = JSON.parse(JSON.stringify(tplG.__customNodeStyles__));
-                            if (tplG.__customNodeTransforms__) item.groups.__customNodeTransforms__ = JSON.parse(JSON.stringify(tplG.__customNodeTransforms__));
-                            item.isDirty = true;
-                            if (item.isMounted && typeof unmountVirtualBatchCard === 'function') unmountVirtualBatchCard(item);
-                        }
-                    }
-
-                    if (Array.isArray(state.selectedCardIds) && state.selectedCardIds.length > 0) {
-                        const selIdSet = new Set(state.selectedCardIds);
-                        selectedPreviewCards = generatedPreviewItems.filter(it => it && selIdSet.has(it.id));
-                    }
-
-                    if (typeof filterPreviewCards === 'function') {
-                        filterPreviewCards();
-                    } else if (mountedToRefreshMedia.length > 0 && typeof loadMountedPageMedia === 'function') {
-                        loadMountedPageMedia(mountedToRefreshMedia, activePageMediaToken);
-                    }
-                }
-
                 if (selectedPreviewCards.length > 0) {
                     updateEditorPanelBasedOnSelection();
                 } else {
                     const titleText = root.selectedTemplateFrameName ? `Şablon: ${root.selectedTemplateFrameName}` : (root.querySelector('.left-panel-title')?.innerText || 'Şablon Değişkenleri');
                     renderEditorPanelLocal(groupedInputs, titleText);
-                }
-
-                if (selectedCanvasLayerNode && !document.body.contains(selectedCanvasLayerNode)) {
-                    selectedCanvasLayerNode = null;
-                }
-                if (selectedCanvasLayerNode && typeof renderFigmaCanvasSelectionOverlay === 'function') {
-                    renderFigmaCanvasSelectionOverlay(selectedCanvasLayerNode);
                 }
 
                 // Sahnedeki serbest taşınmış veya yeniden konumlandırılmış Figma gruplarını / katmanlarını da anında senkronize et
@@ -17807,7 +16536,7 @@
                     const fGroups = root.allFrameGroups ? root.allFrameGroups[fName] : null;
                     if (fGroups) {
                         for (let k in fGroups) {
-                            if (k.startsWith('__')) continue;
+                            if (k === '__layerAnimations__' || k === '__customNodeTransforms__') continue;
                             const g = fGroups[k];
                             if (!g || !g.elements) continue;
                             g.elements.forEach(item => {
@@ -18186,7 +16915,6 @@
                 } finally {
                     root.isRestoring = false;
                 }
-                if (typeof root.resetHistoryBaseline === 'function') root.resetHistoryBaseline();
             };
 
             function updateUndoRedoButtons() {
@@ -18203,16 +16931,6 @@
                     redoBtn.classList.toggle('cursor-not-allowed', !canRedo);
                 }
             }
-
-            root.resetHistoryBaseline = () => {
-                if (saveTimeout) {
-                    clearTimeout(saveTimeout);
-                    saveTimeout = null;
-                }
-                root.history = [];
-                root.historyIndex = -1;
-                root.saveStateToHistory();
-            };
 
             root.saveStateToHistory = () => {
                 if (root.isRestoring) return;
@@ -18419,32 +17137,47 @@
                 else { const idMatch = rawInputId.match(/\[(.*?)\]/); if (idMatch) fileId = idMatch[1].trim(); }
                 if (!token || !fileId) return window.showToast('Lütfen bilgileri doldurun.', 'warning'); 
                 localStorage.setItem('figma_token', token);
-                const forceRefresh = Boolean(root._forceFigmaRefresh);
-                root._forceFigmaRefresh = false;
                 
                 loginScreen.classList.add('opacity-0');
                 setTimeout(() => { loginScreen.classList.add('hidden'); appContainer.classList.remove('hidden'); appContainer.classList.add('flex'); showSkeletons(); setTimeout(() => appContainer.classList.add('opacity-100'), 50); }, 300);
 
                 try {
-                    const bundle = await window.FigmaTeamSafeClient.loadTemplateBundle(fileId, token, imageCache, forceRefresh);
-                    figmaData = bundle.data;
-                    figmaImages = bundle.images || {};
-                    figmaSvgs = bundle.svgs || {};
-                    availableFrames = bundle.availableFrames || [];
+                    const cacheKey = fileId + '_' + token;
+                    if (window.figmaGlobalCache[cacheKey]) {
+                        figmaData = window.figmaGlobalCache[cacheKey].data; figmaImages = window.figmaGlobalCache[cacheKey].images; figmaSvgs = window.figmaGlobalCache[cacheKey].svgs; availableFrames = window.figmaGlobalCache[cacheKey].availableFrames;
+                        if (figmaData.name) { tabBtnEl.querySelector('.tab-title').innerText = figmaData.name; } 
+                        setTimeout(() => { initFrames(); queueSave(); }, 400); updatePresetDropdown(); return;
+                    }
 
-                    const figmaName = figmaData.name || "İsimsiz Dosya";
-                    const saveString = `${figmaName} [${fileId}]`;
-                    savedFileIds = JSON.parse(localStorage.getItem('figma_file_ids') || '[]');
-                    savedFileIds = savedFileIds.filter(item => !item.includes(`[${fileId}]`) && item !== fileId);
-                    savedFileIds.unshift(saveString);
-                    if (savedFileIds.length > 15) savedFileIds = savedFileIds.slice(0, 15);
-                    localStorage.setItem('figma_file_ids', JSON.stringify(savedFileIds));
-                    updateFileIdDropdown();
+                    const res = await fetch(`https://api.figma.com/v1/files/${fileId}`, { headers: { 'X-Figma-Token': token } });
+                    if (!res.ok) throw new Error('Erişim hatası.'); figmaData = await res.json();
+                    
+                    const figmaName = figmaData.name || "İsimsiz Dosya"; const saveString = `${figmaName} [${fileId}]`;
+                    savedFileIds = savedFileIds.filter(item => !item.includes(`[${fileId}]`) && item !== fileId); savedFileIds.unshift(saveString);
+                    if (savedFileIds.length > 10) savedFileIds.pop(); localStorage.setItem('figma_file_ids', JSON.stringify(savedFileIds)); updateFileIdDropdown();
                     if (figmaData.name) { tabBtnEl.querySelector('.tab-title').innerText = figmaData.name; }
 
-                    initFrames();
-                    updatePresetDropdown();
-                    queueSave();
+                    const imgRes = await fetch(`https://api.figma.com/v1/files/${fileId}/images`, { headers: { 'X-Figma-Token': token } });
+                    const rawImages = (await imgRes.json()).meta.images || {};
+                    await Promise.all(Object.entries(rawImages).map(async ([ref, url]) => { if (url) { try { figmaImages[ref] = await window.fetchImageAsBase64(url, imageCache); } catch(e) { figmaImages[ref] = url; } } }));
+
+                    const firstPage = figmaData.document.children[0]; const vectorIds = [];
+                    function collectVectors(n) { if (['VECTOR', 'BOOLEAN_OPERATION', 'ELLIPSE', 'REGULAR_POLYGON', 'STAR', 'LINE'].includes(n.type)) vectorIds.push(n.id); else if (n.children) n.children.forEach(collectVectors); }
+                    collectVectors(firstPage);
+                    if (vectorIds.length > 0) {
+                        for (let i = 0; i < vectorIds.length; i += 50) {
+                            const chunk = vectorIds.slice(i, i + 50);
+                            const svgResp = await fetch(`https://api.figma.com/v1/images/${fileId}?ids=${chunk.join(',')}&format=svg`, { headers: { 'X-Figma-Token': token } });
+                            if (svgResp.ok) { const svgData = await svgResp.json(); await Promise.all(Object.entries(svgData.images || {}).map(async ([id, url]) => { if(url) { try { figmaSvgs[id] = await (await fetch(url)).text(); } catch(e){} } })); }
+                        }
+                    }
+
+                    availableFrames = firstPage.children.filter(c => c.type === 'FRAME');
+                    if (availableFrames.length === 0) throw new Error("Sahne (Frame) bulunamadı.");
+                    
+                    window.figmaGlobalCache[cacheKey] = { data: figmaData, images: figmaImages, svgs: figmaSvgs, availableFrames: availableFrames };
+                    initFrames(); updatePresetDropdown(); queueSave();
+
                 } catch (e) { 
                     appContainer.classList.remove('opacity-100'); setTimeout(() => { appContainer.classList.add('hidden'); appContainer.classList.remove('flex'); loginScreen.classList.remove('hidden', 'opacity-0'); }, 300);
                     window.showToast('Hata: ' + e.message, 'error'); 
@@ -19030,7 +17763,8 @@
                 fitPreviewToScreenLocal(); exportAllBtn.classList.remove('hidden'); exportAllBtn.classList.add('flex'); floatingToolbar.classList.remove('hidden'); setTimeout(() => { document.querySelectorAll('.preview-wrapper').forEach(w => window.syncAutoLayoutCollapses && window.syncAutoLayoutCollapses(w)); }, 100);
                 
                 if (root.initialStateToApply) { root.applyWorkspaceState(root.initialStateToApply); delete root.initialStateToApply; }
-                root.resetHistoryBaseline();
+                root.saveStateToHistory();
+                setTimeout(root.saveStateToHistory, 400);
             }
 
             // Şablon Modunda Değişkenleri Diğer Tüm Ölçülere Eşitleme (Cross-Frame Live Sync)
@@ -19359,10 +18093,8 @@
                     else { const idMatch = rawInputId.match(/\[(.*?)\]/); if (idMatch) fileId = idMatch[1].trim(); }
                     if (!token || !fileId) return window.showToast('Figma bağlantı bilgisi bulunamadı.', 'warning');
 
-                    if (window.FigmaTeamSafeClient) {
-                        await window.FigmaTeamSafeClient.invalidate(fileId);
-                    }
-                    root._forceFigmaRefresh = true;
+                    const cacheKey = fileId + '_' + token;
+                    delete window.figmaGlobalCache[cacheKey];
                     root.initialStateToApply = root.getWorkspaceState();
                     window.showToast('Figma tasarımı canlı yenileniyor, mevcut değişkenleriniz korunacak...', 'info');
                     loginBtn.click();
@@ -23404,7 +22136,7 @@ if (node.opacity !== undefined) el.style.opacity = node.opacity;
                         const localGroups = {};
                         for (let key in baseFrameGroups) {
                             if (key.startsWith('__')) {
-                                localGroups[key] = baseFrameGroups[key] ? JSON.parse(JSON.stringify(baseFrameGroups[key])) : baseFrameGroups[key];
+                                localGroups[key] = baseFrameGroups[key];
                                 continue;
                             }
                             const gTpl = baseFrameGroups[key];
@@ -23466,7 +22198,6 @@ if (node.opacity !== undefined) el.style.opacity = node.opacity;
                 previewBatchBtn.disabled = false;
                 if (mediaTabStagePreviewBtn) mediaTabStagePreviewBtn.disabled = false;
                 updateExportBatchSummaryUI();
-                if (typeof root.resetHistoryBaseline === 'function') root.resetHistoryBaseline();
                 queueSave();
             }
         });
@@ -23640,7 +22371,6 @@ if (node.opacity !== undefined) el.style.opacity = node.opacity;
             if (root.preBatchState) {
                 root.applyWorkspaceState(root.preBatchState);
             }
-            if (typeof root.resetHistoryBaseline === 'function') root.resetHistoryBaseline();
             queueSave();
         });
 
@@ -24858,8 +23588,8 @@ if (node.opacity !== undefined) el.style.opacity = node.opacity;
 
     // --- HIZLI KOMUT PALETİ (SPOTLIGHT CTRL+K / CMD+K) ---
     const COMMAND_PALETTE_ITEMS = [
-        { id: 'add_element', icon: '➕', title: 'Yeni Öğe / Kampanya Rozeti / QR Kod Ekle', sub: 'Sahneye sıfırdan metin, hazır Etstur kampanya rozeti, üstü çizili fiyat veya QR kod ekler', badge: 'Pro Edit', run: (r) => r?.querySelector('.studio-rail-btn[data-rail-action="add-element"]')?.click() },
-        { id: 'scene_tree', icon: '🌳', title: 'Universal Sahne Ağacını Aç (Sabit Katmanları Düzenle)', sub: 'Figma’da alt çizgi (_) unutulmuş sabit metin ve kutuları tek tıkla değişkene dönüştürür', badge: 'Pro Edit', run: (r) => r?.querySelector('.studio-rail-btn[data-rail-action="scene-tree"]')?.click() },
+        { id: 'add_element', icon: '➕', title: 'Yeni Öğe / Kampanya Rozeti / QR Kod Ekle', sub: 'Sahneye sıfırdan metin, hazır Etstur kampanya rozeti, üstü çizili fiyat veya QR kod ekler', badge: 'Pro Edit', run: (r) => r?.querySelector('.rail-station-btn[data-rail-action="add-element"]')?.click() },
+        { id: 'scene_tree', icon: '🌳', title: 'Universal Sahne Ağacını Aç (Sabit Katmanları Düzenle)', sub: 'Figma’da alt çizgi (_) unutulmuş sabit metin ve kutuları tek tıkla değişkene dönüştürür', badge: 'Pro Edit', run: (r) => r?.querySelector('.rail-station-btn[data-rail-action="scene-tree"]')?.click() },
         { id: 'qa_check', icon: '🛡️', title: 'Üretim Öncesi Kalite Kontrol (QA Stüdyosu) Aç', sub: '1..N görsel matrisini, taşan metinleri, boş CSV hücrelerini ve Safe Zone uyumunu denetler', badge: 'Denetim', run: () => window.openQaPreflightModal() },
         { id: 'separate_mode', icon: '📸', title: 'Çoklu Görsel Modu: Ayrı Ayrı Görseller (1..N)', sub: 'CSV’deki 1..N (5. ve 8. dahil) tüm görselleri her ölçü için ayrı ayrı üretir', badge: 'Medya', run: (r) => { r?.syncExtraImageModeUI && r.syncExtraImageModeUI('separate'); window.showToast('Ayrı Ayrı Görseller (1..N) modu aktif edildi.', 'success'); } },
         { id: 'slideshow_mode', icon: '🎬', title: 'Çoklu Görsel Modu: Video Slayt Şov (Tek Çıktı)', sub: 'Tüm ekstra görselleri video içinde arka arkaya slayt şov yapar', badge: 'Medya', run: (r) => { r?.syncExtraImageModeUI && r.syncExtraImageModeUI('slideshow'); window.showToast('Video Slayt Şov modu aktif edildi.', 'info'); } },
@@ -24987,7 +23717,7 @@ if (node.opacity !== undefined) el.style.opacity = node.opacity;
             navigateLightboxCard(e.key === 'ArrowLeft' ? -1 : 1);
             return;
         }
-        if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyK' || (e.key || '').toLowerCase() === 'k')) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
             e.preventDefault();
             const modal = document.getElementById('command-palette-modal');
             if (modal && !modal.classList.contains('hidden')) {
@@ -25012,261 +23742,127 @@ if (node.opacity !== undefined) el.style.opacity = node.opacity;
 
     createWorkspace();
 // ============================================================================
-// ÇOKLU EKİP (4+ EŞZAMANLI KULLANICI) ÇAKIŞMASIZ BULUT & OTURUM MİMARİSİ
+// GITHUB MERKEZİ YÖNETİM & ORTAK EKİP HAFIZASI (KULLANICI GİRİŞSİZ)
 // ============================================================================
 const STUDIO_REMOTE_CONFIG = {
-    version: "63.0",
+    // GitHub'dan kodu her güncellediğinde bu versiyonu değiştirebilirsin (Örn: "60.2")
+    version: "60.1",
+
+    // İstersen az önce açtığın Firebase URL'sini buraya yaz (Presetler ve geçmiş herkeste ortak olur).
+    // Sadece GitHub üzerinden statik yönetmek istiyorsan boş "" bırakabilirsin.
     firebaseDbUrl: "https://figotomasyon-default-rtdb.firebaseio.com/",
-    defaultFigmaFiles: [],
-    defaultSheets: []
+
+    // Linki açan herkeste otomatik görünmesini istediğin sabit Figma Dosyaları:
+    defaultFigmaFiles: [
+        // Örnek: "Yaz Kampanyası Şablonları [FIGMA_FILE_ID_BURAYA]"
+    ],
+
+    // Linki açan herkeste "Son Bağlanan Google Sheets" listesinde hazır çıkacak tablolar:
+    defaultSheets: [
+        // Örnek: { url: "https://docs.google.com/spreadsheets/d/...", tab: "Sayfa1", label: "📊 Yaz Otelleri Ana Tablo" }
+    ]
 };
 
 (function initGitHubManagedStudio() {
-    const origSetItem = localStorage.setItem.bind(localStorage);
-
-    // Her ekip üyesine / tarayıcıya benzersiz, izole bir kimlik ata (Üyelerin oturumları birbirini ASLA ezmez!)
-    let teamMemberId = localStorage.getItem('etstur_team_member_id');
-    if (!teamMemberId) {
-        teamMemberId = 'uye_' + Math.random().toString(36).slice(2, 8) + '_' + Date.now().toString(36).slice(-4);
-        origSetItem('etstur_team_member_id', teamMemberId);
-    }
-
-    // 1. GitHub'dan tanımlanan varsayılan Figma ID'lerini yerel listeye birleştir (Set-Union)
+    // 1. GitHub'dan tanımlanan varsayılan Figma ID'lerini yerel listeye işle
     if (Array.isArray(STUDIO_REMOTE_CONFIG.defaultFigmaFiles) && STUDIO_REMOTE_CONFIG.defaultFigmaFiles.length > 0) {
         const currentIds = JSON.parse(localStorage.getItem('figma_file_ids') || '[]');
         const mergedIds = [...new Set([...STUDIO_REMOTE_CONFIG.defaultFigmaFiles, ...currentIds])];
-        origSetItem('figma_file_ids', JSON.stringify(mergedIds.slice(0, 20)));
+        localStorage.setItem('figma_file_ids', JSON.stringify(mergedIds.slice(0, 15)));
     }
 
-    // 2. GitHub'dan tanımlanan varsayılan Google Sheets tablolarını geçmişe birleştir
+    // 2. GitHub'dan tanımlanan varsayılan Google Sheets tablolarını geçmişe işle
     if (Array.isArray(STUDIO_REMOTE_CONFIG.defaultSheets) && STUDIO_REMOTE_CONFIG.defaultSheets.length > 0) {
         const currentSheets = JSON.parse(localStorage.getItem('etstur_sheets_history_v1') || '[]');
         const mergedSheets = [...STUDIO_REMOTE_CONFIG.defaultSheets];
         currentSheets.forEach(item => {
-            if (item && !mergedSheets.some(x => x.url === item.url && (x.tab || '') === (item.tab || ''))) {
+            if (!mergedSheets.some(x => x.url === item.url && (x.tab || '') === (item.tab || ''))) {
                 mergedSheets.push(item);
             }
         });
-        origSetItem('etstur_sheets_history_v1', JSON.stringify(mergedSheets.slice(0, 15)));
+        localStorage.setItem('etstur_sheets_history_v1', JSON.stringify(mergedSheets.slice(0, 10)));
     }
 
-    // 3. Versiyon kontrolü
+    // 3. Versiyon kontrolü (GitHub'da güncelleme yaptığında ekibe bilgi verir)
     const lastSeenVer = localStorage.getItem('etstur_studio_ver');
     if (lastSeenVer && lastSeenVer !== STUDIO_REMOTE_CONFIG.version) {
         setTimeout(() => {
-            if (window.showToast) window.showToast(`🚀 Stüdyo v${STUDIO_REMOTE_CONFIG.version} Çoklu Ekip & Timeline Sürümü Aktif!`, 'success');
+            if (window.showToast) window.showToast(`🚀 Stüdyo v${STUDIO_REMOTE_CONFIG.version} sürümüne güncellendi!`, 'success');
         }, 800);
     }
-    origSetItem('etstur_studio_ver', STUDIO_REMOTE_CONFIG.version);
+    localStorage.setItem('etstur_studio_ver', STUDIO_REMOTE_CONFIG.version);
 
-    // 4. 4+ KİŞİLİK EKİP İÇİN ÇAKIŞMASIZ ATOMİK SENKRONİZASYON (Asla Kök 'PUT' Yapmaz -> Sadece 'PATCH' & Küme Birleşimi!)
+    // 4. Kullanıcı girişi olmadan ortak ekip senkronizasyonu (Firebase adresi girildiyse aktif olur)
     const dbUrl = (STUDIO_REMOTE_CONFIG.firebaseDbUrl || '').trim().replace(/\/$/, '');
-    const teamPill = document.getElementById('team-sync-status-pill');
-    const teamLabel = document.getElementById('team-sync-status-label');
-
     if (!dbUrl || dbUrl.includes('BURAYA-FIREBASE')) return;
 
-    const sanitizeFirebaseKey = (str) => String(str || '').replace(/[.#$/\[\]]/g, '_');
-
-    const mergeUniqueStringList = (localArr, remoteArr, maxItems = 20) => {
-        const out = [];
-        const seen = new Set();
-        [...(Array.isArray(localArr) ? localArr : []), ...(Array.isArray(remoteArr) ? remoteArr : [])].forEach(val => {
-            const clean = String(val || '').trim();
-            if (!clean) return;
-            const idMatch = clean.match(/\[(.*?)\]/);
-            const dedupKey = idMatch ? idMatch[1].trim() : clean;
-            if (!seen.has(dedupKey)) {
-                seen.add(dedupKey);
-                out.push(clean);
-            }
-        });
-        return out.slice(0, maxItems);
-    };
-
-    const mergeUniqueSheetsList = (localArr, remoteArr, maxItems = 15) => {
-        const out = [];
-        [...(Array.isArray(localArr) ? localArr : []), ...(Array.isArray(remoteArr) ? remoteArr : [])].forEach(item => {
-            if (!item || !item.url) return;
-            if (!out.some(x => x.url === item.url && (x.tab || '') === (item.tab || ''))) {
-                out.push(item);
-            }
-        });
-        return out.slice(0, maxItems);
-    };
-
-    const notifyAllWorkspacesRefresh = () => {
-        document.querySelectorAll('.workspace-root').forEach(r => {
-            if (typeof r.refreshSharedDropdowns === 'function') {
-                try { r.refreshSharedDropdowns(); } catch (e) {}
-            }
-        });
-    };
-
     let isSyncingFromCloud = false;
-    const pendingKeyTimers = new Map();
+    let pushTimer = null;
 
-    async function pullAndMergeSharedTeamData() {
+    async function pullSharedTeamData() {
         try {
             const res = await fetch(`${dbUrl}/otomasyon_shared.json`, { cache: 'no-store' });
-            if (!res.ok) return;
             const data = await res.json();
-            if (!data || typeof data !== 'object') return;
+            if (!data) return;
 
             isSyncingFromCloud = true;
-            try {
-                // a) Figma File ID listesini ezmeden birleştir
-                if (Array.isArray(data.figma_file_ids)) {
-                    const localIds = JSON.parse(localStorage.getItem('figma_file_ids') || '[]');
-                    const mergedIds = mergeUniqueStringList(localIds, data.figma_file_ids, 20);
-                    origSetItem('figma_file_ids', JSON.stringify(mergedIds));
-                }
-
-                // b) Google Sheets geçmişini ezmeden birleştir
-                if (Array.isArray(data.sheets_history)) {
-                    const localSheets = JSON.parse(localStorage.getItem('etstur_sheets_history_v1') || '[]');
-                    const mergedSheets = mergeUniqueSheetsList(localSheets, data.sheets_history, 15);
-                    origSetItem('etstur_sheets_history_v1', JSON.stringify(mergedSheets));
-                }
-
-                // c) Presetleri dosya ve preset ismi bazında ezmeden birleştir (A kişisi kaydederken B kişisinin presetini silmez!)
-                const tombstones = (data.deleted_presets && typeof data.deleted_presets === 'object') ? data.deleted_presets : {};
-                if (data.presets && typeof data.presets === 'object') {
-                    Object.entries(data.presets).forEach(([storageKey, remotePresetsMap]) => {
-                        if (!storageKey || !storageKey.startsWith('etstur_presets_') || !remotePresetsMap || typeof remotePresetsMap !== 'object') return;
-                        const localPresetsMap = JSON.parse(localStorage.getItem(storageKey) || '{}');
-                        const fileTombstones = tombstones[sanitizeFirebaseKey(storageKey)] || {};
-                        const mergedMap = { ...remotePresetsMap, ...localPresetsMap };
-                        Object.keys(fileTombstones).forEach(delName => {
-                            if (fileTombstones[delName]) delete mergedMap[delName];
-                        });
-                        origSetItem(storageKey, JSON.stringify(mergedMap));
-                    });
-                }
-
-                // d) Aktif ekip üyesi sayısını güncelle (son 2 dakika içinde sinyal veren üyeler)
-                if (data.presence && typeof data.presence === 'object' && teamLabel) {
-                    const now = Date.now();
-                    const onlineCount = Object.values(data.presence).filter(p => p && typeof p.ts === 'number' && (now - p.ts) < 130000).length;
-                    const displayOnline = Math.max(1, onlineCount);
-                    teamLabel.textContent = displayOnline > 1 ? `Ekip Aktif (${displayOnline} Çevrimiçi)` : 'Ekip Aktif • İzole Oturum';
-                    if (teamPill) teamPill.classList.remove('hidden');
-                }
-
-                notifyAllWorkspacesRefresh();
-            } finally {
-                isSyncingFromCloud = false;
+            if (Array.isArray(data.figma_file_ids)) {
+                localStorage.setItem('figma_file_ids', JSON.stringify(data.figma_file_ids));
             }
+            if (Array.isArray(data.sheets_history)) {
+                localStorage.setItem('etstur_sheets_history_v1', JSON.stringify(data.sheets_history));
+            }
+            if (data.presets && typeof data.presets === 'object') {
+                Object.entries(data.presets).forEach(([k, val]) => {
+                    localStorage.setItem(k, JSON.stringify(val));
+                });
+            }
+            isSyncingFromCloud = false;
         } catch (err) {
+            console.warn('Ortak ayar senkronizasyonu atlandı:', err);
             isSyncingFromCloud = false;
         }
     }
 
-    async function sendPresenceHeartbeat() {
-        try {
-            await fetch(`${dbUrl}/otomasyon_shared/presence/${sanitizeFirebaseKey(teamMemberId)}.json`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ts: Date.now(), ver: STUDIO_REMOTE_CONFIG.version })
-            });
-        } catch (e) {}
-    }
-
-    function scheduleAtomicKeySync(key) {
+    function schedulePushSharedTeamData() {
         if (isSyncingFromCloud) return;
-        if (pendingKeyTimers.has(key)) clearTimeout(pendingKeyTimers.get(key));
-
-        const tid = setTimeout(async () => {
-            pendingKeyTimers.delete(key);
+        clearTimeout(pushTimer);
+        pushTimer = setTimeout(async () => {
             try {
-                if (key === 'figma_file_ids') {
-                    const remoteRes = await fetch(`${dbUrl}/otomasyon_shared/figma_file_ids.json`, { cache: 'no-store' }).catch(() => null);
-                    const remoteArr = (remoteRes && remoteRes.ok) ? (await remoteRes.json() || []) : [];
-                    const localArr = JSON.parse(localStorage.getItem('figma_file_ids') || '[]');
-                    const merged = mergeUniqueStringList(localArr, remoteArr, 20);
-                    origSetItem('figma_file_ids', JSON.stringify(merged));
-                    await fetch(`${dbUrl}/otomasyon_shared.json`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ figma_file_ids: merged, updatedAt: new Date().toISOString(), lastUpdatedBy: teamMemberId })
-                    });
-                } else if (key === 'etstur_sheets_history_v1') {
-                    const remoteRes = await fetch(`${dbUrl}/otomasyon_shared/sheets_history.json`, { cache: 'no-store' }).catch(() => null);
-                    const remoteArr = (remoteRes && remoteRes.ok) ? (await remoteRes.json() || []) : [];
-                    const localArr = JSON.parse(localStorage.getItem('etstur_sheets_history_v1') || '[]');
-                    const merged = mergeUniqueSheetsList(localArr, remoteArr, 15);
-                    origSetItem('etstur_sheets_history_v1', JSON.stringify(merged));
-                    await fetch(`${dbUrl}/otomasyon_shared.json`, {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ sheets_history: merged, updatedAt: new Date().toISOString(), lastUpdatedBy: teamMemberId })
-                    });
-                } else if (key && key.startsWith('etstur_presets_')) {
-                    const safeKey = sanitizeFirebaseKey(key);
-                    const localPresets = JSON.parse(localStorage.getItem(key) || '{}');
-                    const patchPayload = {};
-                    Object.entries(localPresets).forEach(([pName, pVal]) => {
-                        patchPayload[sanitizeFirebaseKey(pName)] = pVal;
-                    });
-                    if (Object.keys(patchPayload).length > 0) {
-                        // Sadece ilgili preset ağacına atomik PATCH at (Diğer ekip üyelerinin presetlerine dokunmaz!)
-                        await fetch(`${dbUrl}/otomasyon_shared/presets/${safeKey}.json`, {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(patchPayload)
-                        });
-                        // Yeniden kaydedilen preset varsa silinmiş işaretini kaldır
-                        const clearTomb = {};
-                        Object.keys(patchPayload).forEach(k => { clearTomb[k] = null; });
-                        await fetch(`${dbUrl}/otomasyon_shared/deleted_presets/${safeKey}.json`, {
-                            method: 'PATCH',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(clearTomb)
-                        }).catch(() => {});
+                const presetsMap = {};
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    if (k && k.startsWith('etstur_presets_')) {
+                        presetsMap[k] = JSON.parse(localStorage.getItem(k) || '{}');
                     }
                 }
+                const payload = {
+                    updatedAt: new Date().toISOString(),
+                    figma_file_ids: JSON.parse(localStorage.getItem('figma_file_ids') || '[]'),
+                    sheets_history: JSON.parse(localStorage.getItem('etstur_sheets_history_v1') || '[]'),
+                    presets: presetsMap
+                };
+                await fetch(`${dbUrl}/otomasyon_shared.json`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
             } catch (err) {
-                console.warn('Atomik ekip senkronizasyonu uyarısı:', err);
+                console.warn('Ortak ayar yazma hatası:', err);
             }
-        }, 550);
-
-        pendingKeyTimers.set(key, tid);
+        }, 800);
     }
 
-    window.TeamCloudSync = {
-        teamMemberId,
-        pullNow: pullAndMergeSharedTeamData,
-        async deleteRemotePreset(storageKey, presetName) {
-            if (!storageKey || !presetName) return;
-            const safeFileKey = sanitizeFirebaseKey(storageKey);
-            const safePresetKey = sanitizeFirebaseKey(presetName);
-            try {
-                await fetch(`${dbUrl}/otomasyon_shared/presets/${safeFileKey}/${encodeURIComponent(safePresetKey)}.json`, {
-                    method: 'DELETE'
-                });
-                await fetch(`${dbUrl}/otomasyon_shared/deleted_presets/${safeFileKey}.json`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ [safePresetKey]: Date.now() })
-                });
-            } catch (e) {}
-        }
-    };
-
+    // localStorage üzerinde Preset, Figma File ID veya Sheets geçmişi değiştiğinde otomatik buluta yaz
+    const origSetItem = localStorage.setItem.bind(localStorage);
     localStorage.setItem = function(key, value) {
         origSetItem(key, value);
         if (key === 'figma_file_ids' || key === 'etstur_sheets_history_v1' || (key && key.startsWith('etstur_presets_'))) {
-            scheduleAtomicKeySync(key);
+            schedulePushSharedTeamData();
         }
     };
 
-    sendPresenceHeartbeat().then(() => pullAndMergeSharedTeamData());
-    setInterval(() => {
-        if (document.visibilityState === 'visible') {
-            sendPresenceHeartbeat();
-            pullAndMergeSharedTeamData();
-        }
-    }, 45000);
+    pullSharedTeamData();
 })();
 
 </script>
